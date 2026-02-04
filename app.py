@@ -19,7 +19,7 @@ APP_VERSION = "v1.0.0"
 GITHUB_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO"
 
 # Hide debug tools on deployed app by setting STREAMLIT_ENV=prod in Streamlit Cloud
-IS_PRODUCTION = os.environ.get("STREAMLIT_ENV", "dev").lower() == "prod"
+IS_PRODUCTION = os.environ.get("STREAMLIT_ENV") == "prod" or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
 
 
 # =========================================================
@@ -1081,3 +1081,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
