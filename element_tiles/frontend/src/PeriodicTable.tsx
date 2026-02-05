@@ -29,9 +29,8 @@ type Legend = {
 };
 
 function fgColor(status: Tile["status"]) {
-  return status === "bad" || status === "correct" || status === "lost"
-  ? "white"
-  : "#111827";
+  if (status === "lost") return "#FDE68A"; // soft amber/yellow
+  return status === "bad" || status === "correct" ? "white" : "#111827";
 }
 
 const PeriodicTable = (props: ComponentProps) => {
