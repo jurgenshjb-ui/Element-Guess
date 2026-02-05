@@ -1,0 +1,9 @@
+# Node
+node_modules/
+
+# Local storage frontend
+local_storage/frontend/node_modules/
+
+# Python
+__pycache__/
+.venv/
