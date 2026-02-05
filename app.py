@@ -25,6 +25,9 @@ IS_PRODUCTION = (
     or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
 )
 
+ALLOW_DEBUG = bool(st.secrets.get("ALLOW_DEBUG", False))
+if not IS_PRODUCTION or ALLOW_DEBUG:
+    debug_mode = st.toggle("Debug mode", value=False)
 
 # =========================================================
 # Data model
@@ -1314,4 +1317,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
