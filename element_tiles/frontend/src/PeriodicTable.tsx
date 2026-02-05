@@ -88,7 +88,8 @@ const PeriodicTable = (props: ComponentProps) => {
 
     const cls =
       "tile" +
-      (disabled || t.locked ? " disabled" : "") +
+      (t.status ? ` ${t.status}` : "") +
+      ((disabled || t.locked) ? " disabled" : "") +
       (t.isNewHint ? " pulse" : "") +
       (t.isLastGuess ? " lastGuess" : "") +
       (t.isWin ? " win" : "") +
