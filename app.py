@@ -16,7 +16,7 @@ from element_tiles import periodic_table
 # =========================================================
 # Public app metadata
 # =========================================================
-APP_VERSION = "v1.3.0"
+APP_VERSION = "v1.3.1"
 GITHUB_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO"
 
 # =========================================================
@@ -244,14 +244,15 @@ CLUES: Dict[str, str] = {
     "metal_group": "Metal group",
 }
 
+# Order used only as a *tie-breaker* when two clues leave the same next pool size.
 CLUE_ORDER = [
     "category3",
     "group_family",
     "block",
-    "period",
     "band",
-    "state",        # phase first
+    "state",        # phase before noble gas
     "noble_gas",    # only eligible if state == gas
+    "period",
     "boil_split",
     "melt_split",
     "radioactive",
@@ -348,7 +349,7 @@ def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
 
 
 def debug_unrevealed_keys(revealed: Dict[str, str]) -> List[str]:
-    # Debug ignores gameplay gating, but keeps "only one temperature split" logic to avoid confusion
+    # Debug ignores gameplay gating, but keeps "only one temperature split" logic
     keys = [k for k in CLUE_ORDER if k not in revealed]
     if "boil_split" in revealed and "melt_split" in keys:
         keys.remove("melt_split")
@@ -358,59 +359,8 @@ def debug_unrevealed_keys(revealed: Dict[str, str]) -> List[str]:
 
 
 # =========================================================
-# Entropy scoring
-# =========================================================
-def _entropy_from_counts(counts: List[int]) -> float:
-    total = sum(counts)
-    if total <= 0:
-        return 0.0
-    h = 0.0
-    for c in counts:
-        if c <= 0:
-            continue
-        p = c / total
-        h -= p * math.log2(p)
-    return h
-
-
-def _distribution_for_clue(
-    current_candidates: List[Element],
-    clue_key: str,
-    temp_split_thresholds: Dict[str, Tuple[Optional[float], int, int]],
-) -> Tuple[Dict[str, int], int]:
-    """
-    Returns (value_counts, total_considered).
-    For categorical clues: counts of each value.
-    For temp split clues: counts for buckets ["≤X", ">X", "unknown"] (unknown counted).
-    """
-    if clue_key not in ("boil_split", "melt_split"):
-        counts: Dict[str, int] = {}
-        for e in current_candidates:
-            v = prop(e, clue_key)
-            counts[v] = counts.get(v, 0) + 1
-        return counts, len(current_candidates)
-
-    kind = "boil" if clue_key == "boil_split" else "melt"
-    x, known, total = temp_split_thresholds.get(kind, (None, 0, len(current_candidates)))
-    counts = {"≤X": 0, ">X": 0, "unknown": 0}
-    if x is None:
-        return counts, total
-
-    for e in current_candidates:
-        val = _temp_value_K(e, kind)
-        if val is None:
-            counts["unknown"] += 1
-        elif val <= x:
-            counts["≤X"] += 1
-        else:
-            counts[">X"] += 1
-
-    return counts, total
-
-
-# =========================================================
 # Temperature split helpers (rounded to nearest 100 K)
-# + guardrail: require >=70% known among current candidates
+# Guardrail: require >=70% known among current candidates
 # =========================================================
 def _choose_temp_split_threshold(current_candidates: List[Element], kind: str) -> Tuple[Optional[float], int, int]:
     vals = [(_temp_value_K(e, kind)) for e in current_candidates]
@@ -421,7 +371,6 @@ def _choose_temp_split_threshold(current_candidates: List[Element], kind: str) -
     if total == 0 or known < 6:
         return None, known, total
 
-    # If too many unknowns, skip this clue (avoid "gotcha" elimination)
     if (known / total) < 0.70:
         return None, known, total
 
@@ -465,28 +414,27 @@ def _deterministic_temp_tiebreak(game_mode: str, seed: Optional[int]) -> int:
     if game_mode == "Daily":
         d = dt.date.today().toordinal()
         return d % 2
-    # Endless
     s = seed or 0
     return s % 2
 
 
-def choose_next_clue_entropy(
+# =========================================================
+# PREVIOUS (entropy-free) clue selection logic:
+# "General rule set should be that any new clue should result
+#  in the widest possible pool of options to guess from next."
+#
+# We pick the clue that leaves the LARGEST remaining pool
+# (for the secret’s value), but we skip "useless" clues that
+# don't narrow (cnt == current_n) or eliminate everything (cnt == 0).
+# =========================================================
+def choose_next_clue_max_pool(
     secret: Element,
     elements: List[Element],
     revealed: Dict[str, str],
     attempt: int,
     game_mode: str,
     seed: Optional[int],
-) -> Optional[Tuple[str, str, int, float]]:
-    """
-    Choose next clue by:
-      1) Only consider clues that STRICTLY NARROW (0 < cnt < current_n), otherwise ignore.
-      2) Score by highest entropy of value distribution among current candidates.
-      3) Tie-break by:
-         a) larger secret-bucket candidate count (keeps next pool wider)
-         b) larger minimum bucket size (avoids 99/1)
-         c) deterministic temperature tie-break when boil vs melt are still tied
-    """
+) -> Optional[Tuple[str, str, int]]:
     remaining_keys = allowed_clue_keys(revealed, attempt)
     if not remaining_keys:
         return None
@@ -496,19 +444,20 @@ def choose_next_clue_entropy(
     if current_n <= 1:
         return None
 
-    # Precompute possible temp thresholds
+    # Precompute thresholds for possible temp splits
     temp_thresholds = {
         "boil": _choose_temp_split_threshold(current_candidates, "boil"),
         "melt": _choose_temp_split_threshold(current_candidates, "melt"),
     }
 
-    best: Optional[Tuple[str, str, int, float, int, int]] = None
-    # best tuple: (key, value, cnt_secret, entropy, min_bucket, temp_tiebreak_rank)
+    best: Optional[Tuple[str, str, int, int, int]] = None
+    # tuple: (key, value, cnt_secret, tie_rank, order_index)
+    # tie_rank used only when boil vs melt tie perfectly.
 
     for k in remaining_keys:
         if k in ("boil_split", "melt_split"):
             kind = "boil" if k == "boil_split" else "melt"
-            x, known, total = temp_thresholds[kind]
+            x, _, _ = temp_thresholds[kind]
             if x is None:
                 continue
 
@@ -521,22 +470,17 @@ def choose_next_clue_entropy(
             if not (0 < cnt < current_n):
                 continue
 
-            counts_dict, _ = _distribution_for_clue(current_candidates, k, temp_thresholds)
-            ent = _entropy_from_counts(list(counts_dict.values()))
-            min_bucket = min([c for c in counts_dict.values() if c > 0], default=0)
-
             op = "le" if bucket == "≤X" else "gt"
             v = f"{op}|{int(x)}"
 
-            # deterministic tie-break only when needed (boil vs melt)
+            # deterministic tie-break only when boil vs melt tie exactly
             temp_rank = _deterministic_temp_tiebreak(game_mode, seed)
-            # For ranking, let boil be 0, melt be 1; flip by temp_rank to alternate
             # If temp_rank==0 => prefer boil; if 1 => prefer melt
             prefer_melt = (temp_rank == 1)
             this_is_melt = (k == "melt_split")
             tie_rank = 0 if (this_is_melt == prefer_melt) else 1
 
-            cand = (k, v, cnt, ent, min_bucket, tie_rank)
+            cand = (k, v, cnt, tie_rank, CLUE_ORDER.index(k))
         else:
             secret_value = prop(secret, k)
             cnt = sum(1 for e in current_candidates if prop(e, k) == secret_value)
@@ -545,41 +489,35 @@ def choose_next_clue_entropy(
             if not (0 < cnt < current_n):
                 continue
 
-            counts_dict, _ = _distribution_for_clue(current_candidates, k, temp_thresholds)
-            ent = _entropy_from_counts(list(counts_dict.values()))
-            min_bucket = min([c for c in counts_dict.values() if c > 0], default=0)
-            cand = (k, secret_value, cnt, ent, min_bucket, 0)
+            cand = (k, secret_value, cnt, 0, CLUE_ORDER.index(k))
 
         if best is None:
             best = cand
         else:
-            # Compare by entropy first, then keep next pool wide, then avoid tiny buckets, then temp tie rank
-            _, _, cnt_b, ent_b, min_b, tie_b = best
-            _, _, cnt_c, ent_c, min_c, tie_c = cand
+            _, _, best_cnt, best_tie, best_ord = best
+            _, _, cnt, tie_rank, ord_idx = cand
 
-            if ent_c > ent_b + 1e-9:
+            # Primary: leave WIDEST remaining pool
+            if cnt > best_cnt:
                 best = cand
-            elif abs(ent_c - ent_b) <= 1e-9:
-                if cnt_c > cnt_b:
+            elif cnt == best_cnt:
+                # Secondary: prefer earlier in CLUE_ORDER (broad concept clues before narrow ones)
+                if ord_idx < best_ord:
                     best = cand
-                elif cnt_c == cnt_b:
-                    if min_c > min_b:
+                elif ord_idx == best_ord:
+                    # Tertiary: for boil vs melt exact ties, use deterministic alternation
+                    if tie_rank < best_tie:
                         best = cand
-                    elif min_c == min_b:
-                        # only meaningful for temp split vs temp split
-                        if tie_c < tie_b:
-                            best = cand
 
     if best is None:
-        # If nothing strictly narrows, return None (we skip useless clues)
         return None
 
-    k, v, cnt, ent, _, _ = best
-    return k, v, cnt, ent
+    k, v, cnt, _, _ = best
+    return k, v, cnt
 
 
 def reveal_next_clue(secret: Element, elements: List[Element], attempt: int) -> None:
-    nxt = choose_next_clue_entropy(
+    nxt = choose_next_clue_max_pool(
         secret=secret,
         elements=elements,
         revealed=st.session_state.revealed,
@@ -589,7 +527,7 @@ def reveal_next_clue(secret: Element, elements: List[Element], attempt: int) -> 
     )
     if not nxt:
         return
-    k, v, _, _ = nxt
+    k, v, _ = nxt
     if k not in st.session_state.revealed:
         st.session_state.revealed[k] = v
         st.session_state.revealed_order.append(k)
@@ -705,7 +643,7 @@ def _distribution_table(current_candidates: List[Element], clue_key: str) -> Lis
 
     if clue_key in ("boil_split", "melt_split"):
         kind = "boil" if clue_key == "boil_split" else "melt"
-        # For debug, show rounded-to-100 buckets (not split ≤/>)
+        # Debug: show rounded-to-100 buckets (not ≤/> split)
         for e in current_candidates:
             val = _temp_value_K(e, kind)
             if val is None:
@@ -734,18 +672,17 @@ def show_debug_panel(secret: Element, elements: List[Element], revealed: Dict[st
     current_n = len(current_candidates)
     st.write(f"**Current candidates (matching revealed):** {current_n}")
 
-    # 1) Secret-value impact + delta reduction (debug ignores gating)
-    rows = []
-    # Precompute temp thresholds for "if revealed now" impact
+    # Precompute thresholds for "if revealed now" impact
     temp_thresholds = {
         "boil": _choose_temp_split_threshold(current_candidates, "boil"),
         "melt": _choose_temp_split_threshold(current_candidates, "melt"),
     }
 
+    rows = []
     for k in debug_unrevealed_keys(revealed):
         if k in ("boil_split", "melt_split"):
             kind = "boil" if k == "boil_split" else "melt"
-            x, known, total = temp_thresholds[kind]
+            x, _, _ = temp_thresholds[kind]
             if x is None:
                 continue
             res = _count_candidates_for_secret_temp_value(secret, current_candidates, k, x)
@@ -1077,7 +1014,6 @@ def _bump_board_nonce():
 
 
 def start_new_game(elements: List[Element], game_mode: str):
-    # Fully reset game state (including UI-only markers)
     st.session_state.status = "playing"
     st.session_state.guesses = []
     st.session_state.guess_feedback = []
@@ -1095,7 +1031,7 @@ def start_new_game(elements: List[Element], game_mode: str):
     st.session_state.prev_hint_set = set()
     st.session_state.stats_recorded = False
 
-    # Force the component to fully remount (prevents "last guess" ghosting)
+    # Force component remount (prevents "ghost last guess")
     _bump_board_nonce()
 
     if game_mode == "Daily":
@@ -1111,7 +1047,7 @@ def ensure_state(elements: List[Element]):
     if "game_mode" not in st.session_state:
         st.session_state.game_mode = "Daily"
         st.session_state.difficulty = "Normal"
-        st.session_state.enable_special_clue = False  # OFF by default (per request)
+        st.session_state.enable_special_clue = False  # OFF by default
         st.session_state.debug_secret_atomic = None
         st.session_state.board_nonce = 0
         start_new_game(elements, st.session_state.game_mode)
@@ -1195,7 +1131,6 @@ def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Di
 
 
 def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
-    # Did you know first
     st.subheader("Did you know?")
     bits = []
     if secret.discovered_by:
@@ -1214,7 +1149,6 @@ def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
     if secret.source:
         st.caption(f"Source: {secret.source}")
 
-    # Element Summary second
     st.subheader(f"🧾 Element Summary — {secret.name} ({secret.symbol})")
 
     col1, col2 = st.columns([1, 2], gap="large")
@@ -1291,10 +1225,9 @@ def main():
     ensure_state(elements)
 
     can_change_settings = (st.session_state.status in ("won", "lost")) or (len(st.session_state.guesses) == 0)
-
     debug_mode = False
 
-    # ---- Sidebar: order as requested (Restart under Difficulty)
+    # ---- Sidebar (Restart under Difficulty)
     with st.sidebar:
         st.subheader("Game")
 
@@ -1330,10 +1263,8 @@ def main():
             help="Reveals whether the answer’s atomic number is higher or lower than your last valid guess (when needed).",
         )
 
-        # Stats in production ✅
         stats_panel()
 
-        # Debug toggle can be enabled in production via ALLOW_DEBUG secret ✅
         if SHOW_DEBUG_UI:
             debug_mode = st.toggle("🛠 Debug mode", value=False)
 
@@ -1418,7 +1349,6 @@ def main():
         status=st.session_state.status,
     )
 
-    # IMPORTANT: key includes board_nonce to prevent "ghost last guess" after restart/mode switch
     board_key = f"tiles_board_{st.session_state.board_nonce}"
 
     click = periodic_table(
@@ -1491,7 +1421,7 @@ def main():
                 st.session_state.win_anim_pending = True
                 st.rerun()
 
-            # Reveal next clue using entropy (skips useless clues)
+            # Reveal next clue using PREVIOUS (max-pool) logic (skips useless clues)
             reveal_next_clue(secret, elements, st.session_state.attempt)
 
             if st.session_state.attempt >= st.session_state.max_guesses:
