@@ -201,4 +201,14 @@
   filter: blur(0.5px);
   opacity: 0.9;
 }
+/* Improve readability on revealed answer (loss) tiles */
+.tile.lost .sym {
+  color: #FEF9C3;          /* soft warm yellow */
+  font-weight: 900;
+}
+
+.tile.lost .anum {
+  color: rgba(255,255,255,0.75);
+  font-size: 11px;         /* slightly smaller than normal */
+}
 
