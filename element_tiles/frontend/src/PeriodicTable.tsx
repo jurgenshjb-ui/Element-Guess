@@ -9,7 +9,7 @@ type Tile = {
   period?: number | null;
   row: "main" | "lanth" | "actin";
   pos?: number;
-  status: "none" | "bad" | "close" | "correct" | "hint";
+  status: "none" | "bad" | "close" | "correct" | "hint" | "lost";
   tooltip: string;
   locked?: boolean;
 
@@ -25,6 +25,7 @@ type Legend = {
   close: string;
   correct: string;
   hint: string;
+  lost: string;
 };
 
 function fgColor(status: Tile["status"]) {
@@ -144,6 +145,9 @@ const PeriodicTable = (props: ComponentProps) => {
         </span>
         <span className="chip">
           <span className="box" style={{ background: legend.hint }} /> easy candidates
+        </span>
+        <span className="chip">
+          <span className="box" style={{ background: legend.lost }} /> revealed answer
         </span>
       </div>
 
