@@ -66,6 +66,9 @@
   margin: 2px auto;
 
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+
+  position: relative;
+  isolation: isolate;
 }
 
 .tile.disabled {
@@ -175,4 +178,27 @@
   animation: winAura 900ms ease-out;
 }
 
+/* Subtle special styling for the revealed answer (loss) */
+.tile.lost {
+  border-color: rgba(255,255,255,0.22);
+  box-shadow:
+    0 1px 0 rgba(0,0,0,0.08),
+    0 0 0 1px rgba(255,255,255,0.08) inset;
+}
+
+/* soft halo behind the tile */
+.tile.lost::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 14px;
+  z-index: -1;
+  background: radial-gradient(
+    circle at 50% 40%,
+    rgba(255,255,255,0.18),
+    rgba(255,255,255,0.00) 60%
+  );
+  filter: blur(0.5px);
+  opacity: 0.9;
+}
 
