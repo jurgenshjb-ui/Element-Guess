@@ -5,7 +5,7 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -15,19 +15,22 @@ from element_tiles import periodic_table
 # =========================================================
 # Public app metadata
 # =========================================================
-APP_VERSION = "v1.1.0"
+APP_VERSION = "v1.2.0"
 GITHUB_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO"
 
-# Streamlit Cloud: put in Secrets (TOML):
+# =========================================================
+# Production / Debug gating
+# Secrets (Streamlit Cloud -> App settings -> Secrets):
 # STREAMLIT_ENV = "prod"
+# ALLOW_DEBUG = true
+# =========================================================
 IS_PRODUCTION = (
     os.environ.get("STREAMLIT_ENV") == "prod"
     or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
 )
-
 ALLOW_DEBUG = bool(st.secrets.get("ALLOW_DEBUG", False))
-if not IS_PRODUCTION or ALLOW_DEBUG:
-    debug_mode = st.toggle("Debug mode", value=False)
+SHOW_DEBUG_UI = (not IS_PRODUCTION) or ALLOW_DEBUG
+
 
 # =========================================================
 # Data model
@@ -45,16 +48,13 @@ class Element:
     discovered_by: str
     named_by: str
     source: str
-
-    # new/optional fields from JSON
     is_noble_gas: bool
     boiling_point_K: Optional[float]
     bohr_model_image: str
 
 
 # =========================================================
-# Chemistry corrections (in-code, so even if JSON is wrong,
-# the game remains correct)
+# Chemistry corrections (in-code)
 # =========================================================
 NOBLE_GAS_NAMES = {"Helium", "Neon", "Argon", "Krypton", "Xenon", "Radon", "Oganesson"}
 CATEGORY_OVERRIDES = {"Hydrogen": "nonmetal", **{n: "nonmetal" for n in NOBLE_GAS_NAMES}}
@@ -66,7 +66,6 @@ def normalize_state(phase: str) -> str:
 
 
 def normalize_category3(raw_category: str, name: str) -> str:
-    # hard override for known mislabels
     if name in CATEGORY_OVERRIDES:
         return CATEGORY_OVERRIDES[name]
 
@@ -81,21 +80,18 @@ def normalize_category3(raw_category: str, name: str) -> str:
 def compute_is_noble_gas(name: str, group: Optional[int]) -> bool:
     if name in NOBLE_GAS_NAMES:
         return True
-    # If dataset lacks flags but group exists, group 18 is noble gases
     return group == 18
 
 
 # =========================================================
 # Radioactivity rule (game rule)
-# Tc (43) and Pm (61) have no stable isotopes
-# All Z >= 84 have no stable isotopes
+# Tc (43), Pm (61), and all Z >= 84
 # =========================================================
 def is_radioactive(e: Element) -> bool:
     return (e.atomic_number in (43, 61)) or (e.atomic_number >= 84)
 
 
 def origin_natural_vs_synthetic(e: Element) -> str:
-    # only meaningful after Radioactive: Yes is revealed
     if e.atomic_number >= 93:
         return "synthetic"
     if e.atomic_number in (43, 61):
@@ -108,7 +104,6 @@ def is_lanthanoid_or_actinoid(e: Element) -> bool:
 
 
 def group_family(e: Element) -> str:
-    # Updated: includes lanthanoid/actinoid grouping
     if is_lanthanoid_or_actinoid(e):
         return "lanthanoid or actinoid"
     g = e.group
@@ -175,23 +170,17 @@ def load_elements(path: str = "PeriodicTableJSON.json") -> List[Element]:
     out: List[Element] = []
 
     for r in raw:
-        name = r.get("name", "")
-        symbol = r.get("symbol", "")
+        name = (r.get("name") or "").strip()
+        symbol = (r.get("symbol") or "").strip()
         number = int(r.get("number"))
-
         group = r.get("group")
         period = r.get("period")
 
-        # state from "phase" in your JSON
         state = normalize_state(r.get("phase"))
-
-        # category override + normalization
         category3 = normalize_category3(r.get("category"), name)
 
-        # is_noble_gas: prefer explicit field if present, otherwise compute
         is_ng = bool(r.get("is_noble_gas")) if ("is_noble_gas" in r) else compute_is_noble_gas(name, group)
 
-        # boiling point K: prefer explicit boiling_point_K; otherwise try common datasets field "boil" (Kelvin)
         bp = r.get("boiling_point_K", None)
         if bp is None and isinstance(r.get("boil"), (int, float)):
             bp = float(r["boil"])
@@ -241,16 +230,14 @@ CLUES: Dict[str, str] = {
     "metal_group": "Metal group",
 }
 
-# Reveal order preference (you can tweak later)
-# Phase/state is before noble_gas; noble_gas only eligible if state == gas
 CLUE_ORDER = [
     "category3",
     "group_family",
     "block",
     "period",
     "band",
-    "state",
-    "noble_gas",
+    "state",        # phase first
+    "noble_gas",    # only eligible if state == gas
     "boil_split",
     "radioactive",
     "origin",
@@ -279,14 +266,12 @@ def prop(e: Element, k: str) -> str:
         return origin_natural_vs_synthetic(e)
     if k == "metal_group":
         return metal_group(e)
-    # boil_split is handled specially in matches()
     return "unknown"
 
 
 def matches(e: Element, revealed: Dict[str, str]) -> bool:
     for k, v in revealed.items():
         if k == "boil_split":
-            # v format: "le|240" or "gt|240"
             if e.boiling_point_K is None:
                 return False
             op, xs = v.split("|", 1)
@@ -296,32 +281,27 @@ def matches(e: Element, revealed: Dict[str, str]) -> bool:
             if op == "gt" and not (e.boiling_point_K > x):
                 return False
             continue
-
         if prop(e, k) != v:
             return False
     return True
 
 
-def candidates(elements: List[Element], revealed: Dict[str, str], guessed: Set[int]) -> List[Element]:
-    return [e for e in elements if e.atomic_number not in guessed and matches(e, revealed)]
-
-
 def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
     keys = [k for k in CLUE_ORDER if k not in revealed]
 
-    # Gate radioactive until after the 3rd guess
+    # Game rule: radioactive can appear only after 3rd guess
     if attempt < 3 and "radioactive" in keys:
         keys.remove("radioactive")
 
-    # Gate origin until radioactive is revealed AND it's Yes
+    # origin only after radioactive yes
     if "origin" in keys and revealed.get("radioactive") != "Yes":
         keys.remove("origin")
 
-    # Gate metal_group until category is metal
+    # metal_group only after metal
     if "metal_group" in keys and revealed.get("category3") != "metal":
         keys.remove("metal_group")
 
-    # Phase/state must come before noble gas, and noble gas only eligible if state == gas
+    # noble gas only if state revealed and gas
     if "noble_gas" in keys and revealed.get("state") != "gas":
         keys.remove("noble_gas")
 
@@ -329,13 +309,12 @@ def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
 
 
 def debug_unrevealed_keys(revealed: Dict[str, str]) -> List[str]:
-    # Debug ignores gameplay gating
+    # Debug ignores gameplay gating (shows potential from start)
     return [k for k in CLUE_ORDER if k not in revealed]
 
 
 # =========================================================
-# Dynamic boiling split (≤/> X) where X is rounded to nearest 10
-# and based on current remaining candidates
+# Dynamic boiling split
 # =========================================================
 def choose_boiling_split_threshold(current_candidates: List[Element]) -> Optional[float]:
     vals = sorted([e.boiling_point_K for e in current_candidates if e.boiling_point_K is not None])
@@ -369,10 +348,6 @@ def choose_next_clue(
     revealed: Dict[str, str],
     attempt: int,
 ) -> Optional[Tuple[str, str, int]]:
-    """
-    Choose next clue with the WIDEST possible remaining candidate pool
-    BUT ignore any clue that doesn't narrow at all.
-    """
     remaining_keys = allowed_clue_keys(revealed, attempt)
     if not remaining_keys:
         return None
@@ -386,7 +361,7 @@ def choose_next_clue(
     best_value: Optional[str] = None
     best_count = -1
 
-    # Prefer only strictly narrowing clues (0 < cnt < current_n)
+    # Prefer strictly narrowing clues; maximize remaining pool
     for k in remaining_keys:
         if k == "boil_split":
             x = choose_boiling_split_threshold(current_candidates)
@@ -409,7 +384,7 @@ def choose_next_clue(
             best_value = v
             best_count = cnt
 
-    # Fallback if nothing narrows (rare): pick largest group anyway
+    # Fallback if nothing narrows
     if best_key is None:
         for k in remaining_keys:
             if k == "boil_split":
@@ -463,21 +438,22 @@ def definitions_panel():
 - **Alkali metals (Group 1)**: very reactive metals with one valence electron.
 - **Alkaline earth metals (Group 2)**: reactive metals with two valence electrons.
 - **Halogens (Group 17)**: reactive nonmetals that gain one electron.
-- **Noble gases (Group 18)**: very stable, mostly unreactive nonmetals.
-- **Lanthanoid or actinoid**: elements in **lanthanoids (57–71)** or **actinoids (89–103)**.
+- **Noble gases (Group 18)**: stable, mostly unreactive nonmetals.
+- **Lanthanoid or actinoid**: elements in **57–71** or **89–103**.
 
 **Electron Blocks**
 - **s-block**: Groups 1–2 (plus H, He).
 - **p-block**: Groups 13–18.
 - **d-block**: Transition metals (Groups 3–12).
-- **f-block**: Lanthanoids & actinoids (shown separately).
+- **f-block**: Lanthanoids & actinoids.
 
 **Radioactive (game rule)**
-- **Radioactive: Yes** if the element has **no stable isotopes**.
-- In this game: **Tc (43)** and **Pm (61)** are radioactive, and **all elements with Z ≥ 84** are radioactive.
+- **Tc (43)** and **Pm (61)** are radioactive
+- **All elements with Z ≥ 84** are radioactive
 
-**Boiling point split (K)**
-- The game may reveal **Boiling point: ≤ X K** or **> X K**, where **X** is chosen to split remaining candidates roughly in half.
+**Boiling point split**
+- Reveals **Boiling point: ≤ X K** or **> X K**
+- **X** is chosen to split remaining candidates roughly in half.
 """
         )
 
@@ -536,7 +512,7 @@ def compute_hi_lo_special_clue(
     if last_valid_guess_atomic is None or guesses_left <= 0:
         return None
 
-    remaining = candidates(elements, revealed, guessed)
+    remaining = [e for e in elements if e.atomic_number not in guessed and matches(e, revealed)]
     if len(remaining) <= guesses_left:
         return None
 
@@ -554,7 +530,6 @@ def _distribution_table(current_candidates: List[Element], clue_key: str) -> Lis
     counts: Dict[str, int] = {}
     for e in current_candidates:
         if clue_key == "boil_split":
-            # show boiling distribution as raw numeric bands for debug (not used as gameplay buckets)
             if e.boiling_point_K is None:
                 v = "unknown"
             else:
@@ -573,7 +548,7 @@ def _distribution_table(current_candidates: List[Element], clue_key: str) -> Lis
     return out
 
 
-def show_debug_panel(secret: Element, elements: List[Element], revealed: Dict[str, str], attempt: int):
+def show_debug_panel(secret: Element, elements: List[Element], revealed: Dict[str, str]):
     current_candidates = [e for e in elements if matches(e, revealed)]
     current_n = len(current_candidates)
     st.write(f"**Current candidates (matching revealed):** {current_n}")
@@ -619,7 +594,7 @@ def show_debug_panel(secret: Element, elements: List[Element], revealed: Dict[st
 
 
 # =========================================================
-# Table positioning + tile building
+# Tiles
 # =========================================================
 def build_positions(elements: List[Element]):
     main: Dict[Tuple[int, int], Element] = {}
@@ -649,10 +624,6 @@ def make_tiles(
     win_anim_pending: bool,
     status: str,
 ) -> List[dict]:
-    """
-    Tile status values passed to TSX:
-      none, bad, close, correct, hint, lost
-    """
     main, lanth, actin = build_positions(elements)
     easy = (difficulty == "Easy")
     normal_locks = (difficulty == "Normal")
@@ -671,15 +642,12 @@ def make_tiles(
         # reveal secret on loss
         if status == "lost" and e.atomic_number == secret_atomic and e.atomic_number not in guessed:
             return "lost"
-
         if e.atomic_number in guessed:
             if e.atomic_number == secret_atomic:
                 return "correct"
             return "close" if matches(e, revealed) else "bad"
-
         if easy and revealed and matches(e, revealed):
             return "hint"
-
         return "none"
 
     def locked_of(e: Element) -> bool:
@@ -702,7 +670,6 @@ def make_tiles(
             status=status_of(e),
             locked=locked_of(e),
             tooltip=tooltip_of(e),
-            # animation flags consumed by TSX
             isLastGuess=(last_guess_atomic is not None and e.atomic_number == last_guess_atomic),
             isNewHint=(e.atomic_number in new_hint_set),
             isWin=(win_anim_pending and e.atomic_number == secret_atomic),
@@ -719,7 +686,7 @@ def make_tiles(
 
 
 # =========================================================
-# Share results helpers
+# Share helpers
 # =========================================================
 def emoji_for_guess(feedback: str) -> str:
     return {"bad": "🟥", "close": "🟧", "correct": "🟩"}.get(feedback, "⬜")
@@ -823,6 +790,7 @@ def push_snapshot():
         last_guess_atomic=st.session_state.last_guess_atomic,
         invalid_atomic=st.session_state.invalid_atomic,
         win_anim_pending=st.session_state.win_anim_pending,
+        stats_recorded=st.session_state.stats_recorded,
     )
     st.session_state.history.append(snap)
 
@@ -842,6 +810,73 @@ def undo_snapshot():
     st.session_state.last_guess_atomic = snap["last_guess_atomic"]
     st.session_state.invalid_atomic = snap["invalid_atomic"]
     st.session_state.win_anim_pending = snap["win_anim_pending"]
+    st.session_state.stats_recorded = snap["stats_recorded"]
+
+
+# =========================================================
+# Stats (production-safe, per-session)
+# =========================================================
+def init_stats():
+    if "stats" not in st.session_state:
+        st.session_state.stats = {
+            "games_played": 0,
+            "wins": 0,
+            "losses": 0,
+            "current_streak": 0,
+            "best_streak": 0,
+            "total_guesses_in_wins": 0,
+            "win_guess_counts": [],
+        }
+
+
+def record_win(guesses_used: int):
+    s = st.session_state.stats
+    s["games_played"] += 1
+    s["wins"] += 1
+    s["current_streak"] += 1
+    s["best_streak"] = max(s["best_streak"], s["current_streak"])
+    s["total_guesses_in_wins"] += guesses_used
+    s["win_guess_counts"].append(guesses_used)
+
+
+def record_loss():
+    s = st.session_state.stats
+    s["games_played"] += 1
+    s["losses"] += 1
+    s["current_streak"] = 0
+
+
+def stats_panel():
+    with st.expander("📊 Stats", expanded=False):
+        s = st.session_state.stats
+        if s["games_played"] == 0:
+            st.caption("No games played yet.")
+            return
+
+        win_rate = (s["wins"] / s["games_played"]) * 100
+        st.markdown(
+            f"""
+**Games played:** {s["games_played"]}  
+**Wins:** {s["wins"]}  
+**Losses:** {s["losses"]}  
+**Win rate:** {win_rate:.1f}%  
+
+**Current streak:** {s["current_streak"]}  
+**Best streak:** {s["best_streak"]}  
+"""
+        )
+
+        if s["wins"] > 0:
+            avg_guesses = s["total_guesses_in_wins"] / s["wins"]
+            st.markdown(f"**Average guesses (wins):** {avg_guesses:.2f}")
+
+            dist: Dict[int, int] = {}
+            for g in s["win_guess_counts"]:
+                dist[g] = dist.get(g, 0) + 1
+
+            st.markdown("**Guess distribution (wins):**")
+            for g in sorted(dist):
+                st.markdown(f"- {g} guesses: {dist[g]}")
 
 
 # =========================================================
@@ -865,6 +900,9 @@ def start_new_game(elements: List[Element], game_mode: str):
     st.session_state.invalid_atomic = None
     st.session_state.last_guess_atomic = None
     st.session_state.win_anim_pending = False
+
+    # Important: prevents double-recording stats on reruns
+    st.session_state.stats_recorded = False
 
     if game_mode == "Daily":
         st.session_state.secret = pick_daily(elements)
@@ -892,6 +930,9 @@ def ensure_state(elements: List[Element]):
     st.session_state.setdefault("invalid_atomic", None)
     st.session_state.setdefault("last_guess_atomic", None)
     st.session_state.setdefault("win_anim_pending", False)
+    st.session_state.setdefault("stats_recorded", False)
+
+    init_stats()
 
 
 def inject_mobile_css():
@@ -907,24 +948,16 @@ def inject_mobile_css():
 
 
 # =========================================================
-# End-game summary (only show properties that were revealed
-# or partially revealed by clues)
+# End-game summary (Did you know ABOVE Element Summary)
 # =========================================================
 def format_boiling_point(bp: Optional[float]) -> str:
     if bp is None:
         return "unknown"
-    # show rounded to nearest 1K for readability
     return f"{bp:.0f} K"
 
 
 def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Dict[str, str]]:
-    """
-    Return rows for the end-game summary table.
-    Include only properties that were revealed or partially revealed.
-    """
     rows: List[Dict[str, str]] = []
-
-    # Map each clue key to an "actual value" display + attribution
     for k in st.session_state.revealed_order:
         if k not in revealed:
             continue
@@ -942,7 +975,6 @@ def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Di
             )
             continue
 
-        # standard clue properties (full reveal)
         if k == "category3":
             rows.append({"Property": "Category", "Value": secret.category3, "Clue": revealed[k], "Revealed by clue": "✅"})
         elif k == "state":
@@ -963,12 +995,11 @@ def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Di
             rows.append({"Property": "Origin", "Value": origin_natural_vs_synthetic(secret), "Clue": revealed[k], "Revealed by clue": "✅"})
         elif k == "metal_group":
             rows.append({"Property": "Metal group", "Value": metal_group(secret), "Clue": revealed[k], "Revealed by clue": "✅"})
-
     return rows
 
 
 def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
-    # --- Did you know first
+    # Did you know first
     st.subheader("Did you know?")
     bits = []
     if secret.discovered_by:
@@ -987,11 +1018,10 @@ def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
     if secret.source:
         st.caption(f"Source: {secret.source}")
 
-    # --- Then Element Summary
+    # Element Summary second
     st.subheader(f"🧾 Element Summary — {secret.name} ({secret.symbol})")
 
     col1, col2 = st.columns([1, 2], gap="large")
-
     with col1:
         if secret.bohr_model_image:
             try:
@@ -1026,7 +1056,6 @@ def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
         st.caption("No clues were revealed in this round (rare).")
 
 
-
 # =========================================================
 # Main app
 # =========================================================
@@ -1037,16 +1066,10 @@ def main():
     st.title("🧪 Element Guess")
     st.caption("Click an element tile to guess. Colors show your progress.")
 
-    # How to play expander
     with st.expander("❓ How to play", expanded=False):
         st.markdown(
             """
 **Goal:** Guess the hidden element in **7 guesses or fewer**.
-
-**How it works:**
-- Click an element on the periodic table to guess.
-- After each guess, the game reveals **shared properties** of the target element.
-- Use those clues to narrow down your next guess.
 
 **Tile colors:**
 - 🟥 **Red** — fails revealed clues
@@ -1101,8 +1124,12 @@ def main():
             value=bool(st.session_state.enable_special_clue),
         )
 
-        if not IS_PRODUCTION:
-            debug_mode = st.toggle("Debug mode", value=False)
+        # Stats in production ✅
+        stats_panel()
+
+        # Debug toggle can be enabled in production via ALLOW_DEBUG secret ✅
+        if SHOW_DEBUG_UI:
+            debug_mode = st.toggle("🛠 Debug mode", value=False)
 
             if debug_mode:
                 st.subheader("🧪 Debug Target Override")
@@ -1126,6 +1153,11 @@ def main():
                     undo_snapshot()
                     st.session_state.ui_message = "Undid last guess."
                     st.rerun()
+
+                if st.button("Reset stats", use_container_width=True):
+                    del st.session_state.stats
+                    init_stats()
+                    st.success("Stats reset")
 
         if st.button("🔄 Restart"):
             start_new_game(elements, st.session_state.game_mode)
@@ -1164,12 +1196,10 @@ def main():
         last_valid_guess_atomic=st.session_state.last_valid_guess_atomic,
     )
 
-    # Debug panel
     if debug_mode:
-        with st.expander("🛠 Debug", expanded=True):
-            show_debug_panel(secret, elements, st.session_state.revealed, st.session_state.attempt)
+        with st.expander("🛠 Debug analytics", expanded=True):
+            show_debug_panel(secret, elements, st.session_state.revealed)
 
-    # One-shot UI triggers
     invalid_atomic_to_send = st.session_state.invalid_atomic
     last_guess_to_send = st.session_state.last_guess_atomic
     win_anim_pending = bool(st.session_state.win_anim_pending)
@@ -1193,7 +1223,7 @@ def main():
             "close": "#F59E0B",
             "correct": "#16A34A",
             "hint": "#3B82F6",
-            "lost": "#111827",  # charcoal reveal on loss
+            "lost": "#111827",
         },
         disabled=(st.session_state.status != "playing"),
         invalidAtomic=invalid_atomic_to_send,
@@ -1239,7 +1269,7 @@ def main():
                 push_snapshot()
 
             st.session_state.last_valid_guess_atomic = atomic
-            st.session_state.last_guess_atomic = atomic  # highlight once
+            st.session_state.last_guess_atomic = atomic
 
             if atomic == secret.atomic_number:
                 feedback = "correct"
@@ -1269,7 +1299,6 @@ def main():
         for k in st.session_state.revealed_order:
             if k not in st.session_state.revealed:
                 continue
-
             v = st.session_state.revealed[k]
             if k == "boil_split":
                 op, xs = v.split("|", 1)
@@ -1287,10 +1316,17 @@ def main():
         labels = [f"{by_atomic[a].name} ({by_atomic[a].symbol})" for a in st.session_state.guesses]
         st.write(" • ".join(labels))
 
-    # Share link section
     st.subheader("🔗 Share this game")
     copy_link_button()
     st.caption("Tip: You can also copy the URL from your browser’s address bar.")
+
+    # Record stats exactly once on game end
+    if st.session_state.status in ("won", "lost") and not st.session_state.stats_recorded:
+        if st.session_state.status == "won":
+            record_win(len(st.session_state.guesses))
+        else:
+            record_loss()
+        st.session_state.stats_recorded = True
 
     # End states + summary + share results
     if st.session_state.status in ("won", "lost"):
@@ -1310,12 +1346,9 @@ def main():
     else:
         st.caption("Finish the game to unlock the Element Summary + Share Results.")
 
-    # Footer
     st.markdown("---")
     st.caption(f"🧪 Element Guess • {APP_VERSION} • GitHub: {GITHUB_URL}")
 
 
 if __name__ == "__main__":
     main()
-
-
