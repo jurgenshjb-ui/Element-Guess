@@ -8,7 +8,8 @@ local_storage/frontend/node_modules/
 __pycache__/
 .venv/
 
-# Frontend build output
-element_tiles/frontend/dist/
-dist/
-
+# --- allow Streamlit component build artifacts ---
+!element_tiles/frontend/dist/
+!element_tiles/frontend/dist/**
+!local_storage/frontend/dist/
+!local_storage/frontend/dist/**
