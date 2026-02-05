@@ -965,15 +965,38 @@ def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Di
 
 
 def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
+    # --- Did you know first
+    st.subheader("Did you know?")
+    bits = []
+    if secret.discovered_by:
+        bits.append(f"**Discovered by:** {secret.discovered_by}")
+    if secret.named_by:
+        bits.append(f"**Named by:** {secret.named_by}")
+    if bits:
+        st.markdown("  \n".join(bits))
+
+    if secret.summary:
+        s = secret.summary.strip()
+        if len(s) > 650:
+            s = s[:650].rsplit(" ", 1)[0] + "…"
+        st.write(s)
+
+    if secret.source:
+        st.caption(f"Source: {secret.source}")
+
+    # --- Then Element Summary
     st.subheader(f"🧾 Element Summary — {secret.name} ({secret.symbol})")
 
-    # image + key facts
     col1, col2 = st.columns([1, 2], gap="large")
 
     with col1:
         if secret.bohr_model_image:
             try:
-                st.image(secret.bohr_model_image, caption=f"Bohr model — {secret.name} ({secret.symbol})", use_container_width=True)
+                st.image(
+                    secret.bohr_model_image,
+                    caption=f"Bohr model — {secret.name} ({secret.symbol})",
+                    use_container_width=True,
+                )
             except Exception:
                 st.caption("Bohr model image unavailable.")
         else:
@@ -999,23 +1022,6 @@ def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
     else:
         st.caption("No clues were revealed in this round (rare).")
 
-    st.subheader("Did you know?")
-    bits = []
-    if secret.discovered_by:
-        bits.append(f"**Discovered by:** {secret.discovered_by}")
-    if secret.named_by:
-        bits.append(f"**Named by:** {secret.named_by}")
-    if bits:
-        st.markdown("  \n".join(bits))
-
-    if secret.summary:
-        s = secret.summary.strip()
-        if len(s) > 650:
-            s = s[:650].rsplit(" ", 1)[0] + "…"
-        st.write(s)
-
-    if secret.source:
-        st.caption(f"Source: {secret.source}")
 
 
 # =========================================================
@@ -1308,3 +1314,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
