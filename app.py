@@ -12,6 +12,9 @@ from typing import Dict, List, Optional, Set, Tuple
 import streamlit as st
 import streamlit.components.v1 as components
 
+# deploy bump: local_storage assets path fix
+
+
 # Your custom periodic-table component
 from element_tiles import periodic_table
 
