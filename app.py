@@ -5,21 +5,25 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
+
 from element_tiles import periodic_table
 
-
 # =========================================================
-# Public app metadata (edit these)
+# Public app metadata
 # =========================================================
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v1.1.0"
 GITHUB_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO"
 
-# Hide debug tools on deployed app by setting STREAMLIT_ENV=prod in Streamlit Cloud
-IS_PRODUCTION = os.environ.get("STREAMLIT_ENV") == "prod" or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
+# Streamlit Cloud: put in Secrets (TOML):
+# STREAMLIT_ENV = "prod"
+IS_PRODUCTION = (
+    os.environ.get("STREAMLIT_ENV") == "prod"
+    or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
+)
 
 
 # =========================================================
@@ -33,19 +37,37 @@ class Element:
     category3: str
     group: Optional[int]
     period: Optional[int]
-    state: str
-    radioactive_raw: bool
+    state: str  # solid/liquid/gas/unknown from JSON "phase"
     summary: str
     discovered_by: str
     named_by: str
     source: str
 
+    # new/optional fields from JSON
+    is_noble_gas: bool
+    boiling_point_K: Optional[float]
+    bohr_model_image: str
+
 
 # =========================================================
-# Normalization / property helpers
+# Chemistry corrections (in-code, so even if JSON is wrong,
+# the game remains correct)
 # =========================================================
-def normalize_category3(t: str) -> str:
-    t = (t or "").lower()
+NOBLE_GAS_NAMES = {"Helium", "Neon", "Argon", "Krypton", "Xenon", "Radon", "Oganesson"}
+CATEGORY_OVERRIDES = {"Hydrogen": "nonmetal", **{n: "nonmetal" for n in NOBLE_GAS_NAMES}}
+
+
+def normalize_state(phase: str) -> str:
+    t = (phase or "").lower().strip()
+    return t if t in ("solid", "liquid", "gas") else "unknown"
+
+
+def normalize_category3(raw_category: str, name: str) -> str:
+    # hard override for known mislabels
+    if name in CATEGORY_OVERRIDES:
+        return CATEGORY_OVERRIDES[name]
+
+    t = (raw_category or "").lower()
     if "metalloid" in t:
         return "metalloid"
     if "nonmetal" in t:
@@ -53,9 +75,29 @@ def normalize_category3(t: str) -> str:
     return "metal"
 
 
-def normalize_state(t: str) -> str:
-    t = (t or "").lower().strip()
-    return t if t in ("solid", "liquid", "gas") else "unknown"
+def compute_is_noble_gas(name: str, group: Optional[int]) -> bool:
+    if name in NOBLE_GAS_NAMES:
+        return True
+    # If dataset lacks flags but group exists, group 18 is noble gases
+    return group == 18
+
+
+# =========================================================
+# Radioactivity rule (game rule)
+# Tc (43) and Pm (61) have no stable isotopes
+# All Z >= 84 have no stable isotopes
+# =========================================================
+def is_radioactive(e: Element) -> bool:
+    return (e.atomic_number in (43, 61)) or (e.atomic_number >= 84)
+
+
+def origin_natural_vs_synthetic(e: Element) -> str:
+    # only meaningful after Radioactive: Yes is revealed
+    if e.atomic_number >= 93:
+        return "synthetic"
+    if e.atomic_number in (43, 61):
+        return "synthetic"
+    return "natural"
 
 
 def is_lanthanoid_or_actinoid(e: Element) -> bool:
@@ -63,9 +105,7 @@ def is_lanthanoid_or_actinoid(e: Element) -> bool:
 
 
 def group_family(e: Element) -> str:
-    """
-    Updated: includes "lanthanoid or actinoid" grouping to reduce "other/none".
-    """
+    # Updated: includes lanthanoid/actinoid grouping
     if is_lanthanoid_or_actinoid(e):
         return "lanthanoid or actinoid"
     g = e.group
@@ -90,6 +130,22 @@ def block_of(e: Element) -> str:
     return "unknown"
 
 
+def metal_group(e: Element) -> str:
+    n = e.atomic_number
+    g = e.group
+    if 57 <= n <= 71 or 89 <= n <= 103:
+        return "inner transition metals"
+    if g == 1 and e.name != "Hydrogen":
+        return "alkali metals"
+    if g == 2:
+        return "alkaline earth metals"
+    if g and 3 <= g <= 12:
+        return "transition metals"
+    if e.category3 == "metal" and block_of(e) == "p-block":
+        return "post-transition metals"
+    return "other/unknown"
+
+
 def atomic_band(n: int) -> str:
     if n <= 10:
         return "1–10"
@@ -105,80 +161,63 @@ def atomic_band(n: int) -> str:
 
 
 # =========================================================
-# Radioactivity rule (FIXED)
-#   - Tc (43) and Pm (61) have no stable isotopes
-#   - All elements with Z >= 84 have no stable isotopes
-# =========================================================
-def is_radioactive(e: Element) -> bool:
-    return (e.atomic_number in (43, 61)) or (e.atomic_number >= 84)
-
-
-def origin_natural_vs_synthetic(e: Element) -> str:
-    """
-    Only used after Radioactive: Yes is revealed.
-    Gameplay-friendly classification:
-      - Synthetic: elements >= 93, plus Technetium (43), Promethium (61)
-      - Natural: everything else
-    """
-    if e.atomic_number >= 93:
-        return "synthetic"
-    if e.atomic_number in (43, 61):
-        return "synthetic"
-    return "natural"
-
-
-def metal_group(e: Element) -> str:
-    """
-    Only meaningful when Category is 'metal'.
-    Buckets:
-      - alkali metals
-      - alkaline earth metals
-      - transition metals
-      - inner transition metals
-      - post-transition metals
-    """
-    n = e.atomic_number
-    g = e.group
-
-    if 57 <= n <= 71 or 89 <= n <= 103:
-        return "inner transition metals"
-    if g == 1 and e.name != "Hydrogen":
-        return "alkali metals"
-    if g == 2:
-        return "alkaline earth metals"
-    if g and 3 <= g <= 12:
-        return "transition metals"
-    if e.category3 == "metal" and block_of(e) == "p-block":
-        return "post-transition metals"
-    return "other/unknown"
-
-
-# =========================================================
 # Load elements
 # =========================================================
 @st.cache_data
 def load_elements(path: str = "PeriodicTableJSON.json") -> List[Element]:
     with open(path, encoding="utf-8") as f:
-        raw = json.load(f)["elements"]
+        data = json.load(f)
 
+    raw = data["elements"]
     out: List[Element] = []
+
     for r in raw:
+        name = r.get("name", "")
+        symbol = r.get("symbol", "")
+        number = int(r.get("number"))
+
+        group = r.get("group")
+        period = r.get("period")
+
+        # state from "phase" in your JSON
+        state = normalize_state(r.get("phase"))
+
+        # category override + normalization
+        category3 = normalize_category3(r.get("category"), name)
+
+        # is_noble_gas: prefer explicit field if present, otherwise compute
+        is_ng = bool(r.get("is_noble_gas")) if ("is_noble_gas" in r) else compute_is_noble_gas(name, group)
+
+        # boiling point K: prefer explicit boiling_point_K; otherwise try common datasets field "boil" (Kelvin)
+        bp = r.get("boiling_point_K", None)
+        if bp is None and isinstance(r.get("boil"), (int, float)):
+            bp = float(r["boil"])
+        elif isinstance(bp, (int, float)):
+            bp = float(bp)
+        else:
+            bp = None
+
+        bohr_img = (r.get("bohr_model_image") or "").strip()
+
         out.append(
             Element(
-                name=r["name"],
-                symbol=r["symbol"],
-                atomic_number=r["number"],
-                category3=normalize_category3(r.get("category")),
-                group=r.get("group"),
-                period=r.get("period"),
-                state=normalize_state(r.get("phase")),
-                radioactive_raw=bool(r.get("radioactive")),
+                name=name,
+                symbol=symbol,
+                atomic_number=number,
+                category3=category3,
+                group=group,
+                period=period,
+                state=state,
                 summary=(r.get("summary") or "").strip(),
                 discovered_by=(r.get("discovered_by") or "").strip(),
                 named_by=(r.get("named_by") or "").strip(),
                 source=(r.get("source") or "").strip(),
+                is_noble_gas=is_ng,
+                boiling_point_K=bp,
+                bohr_model_image=bohr_img,
             )
         )
+
     return sorted(out, key=lambda e: e.atomic_number)
 
 
@@ -192,11 +231,15 @@ CLUES: Dict[str, str] = {
     "period": "Period",
     "band": "Atomic number range",
     "state": "State at room temp",
+    "noble_gas": "Noble gas",
+    "boil_split": "Boiling point (K)",
     "radioactive": "Radioactive",
     "origin": "Origin (natural / synthetic)",
     "metal_group": "Metal group",
 }
 
+# Reveal order preference (you can tweak later)
+# Phase/state is before noble_gas; noble_gas only eligible if state == gas
 CLUE_ORDER = [
     "category3",
     "group_family",
@@ -204,6 +247,8 @@ CLUE_ORDER = [
     "period",
     "band",
     "state",
+    "noble_gas",
+    "boil_split",
     "radioactive",
     "origin",
     "metal_group",
@@ -218,22 +263,40 @@ def prop(e: Element, k: str) -> str:
     if k == "period":
         return str(e.period)
     if k == "group_family":
-        return group_family(e)  # ✅ updated signature uses element
+        return group_family(e)
     if k == "block":
         return block_of(e)
     if k == "band":
         return atomic_band(e.atomic_number)
+    if k == "noble_gas":
+        return "Yes" if e.is_noble_gas else "No"
     if k == "radioactive":
         return "Yes" if is_radioactive(e) else "No"
     if k == "origin":
         return origin_natural_vs_synthetic(e)
     if k == "metal_group":
         return metal_group(e)
+    # boil_split is handled specially in matches()
     return "unknown"
 
 
 def matches(e: Element, revealed: Dict[str, str]) -> bool:
-    return all(prop(e, k) == v for k, v in revealed.items())
+    for k, v in revealed.items():
+        if k == "boil_split":
+            # v format: "le|240" or "gt|240"
+            if e.boiling_point_K is None:
+                return False
+            op, xs = v.split("|", 1)
+            x = float(xs)
+            if op == "le" and not (e.boiling_point_K <= x):
+                return False
+            if op == "gt" and not (e.boiling_point_K > x):
+                return False
+            continue
+
+        if prop(e, k) != v:
+            return False
+    return True
 
 
 def candidates(elements: List[Element], revealed: Dict[str, str], guessed: Set[int]) -> List[Element]:
@@ -255,12 +318,46 @@ def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
     if "metal_group" in keys and revealed.get("category3") != "metal":
         keys.remove("metal_group")
 
+    # Phase/state must come before noble gas, and noble gas only eligible if state == gas
+    if "noble_gas" in keys and revealed.get("state") != "gas":
+        keys.remove("noble_gas")
+
     return keys
 
 
 def debug_unrevealed_keys(revealed: Dict[str, str]) -> List[str]:
-    # Debug ignores gameplay gating — show potential from the start
+    # Debug ignores gameplay gating
     return [k for k in CLUE_ORDER if k not in revealed]
+
+
+# =========================================================
+# Dynamic boiling split (≤/> X) where X is rounded to nearest 10
+# and based on current remaining candidates
+# =========================================================
+def choose_boiling_split_threshold(current_candidates: List[Element]) -> Optional[float]:
+    vals = sorted([e.boiling_point_K for e in current_candidates if e.boiling_point_K is not None])
+    if len(vals) < 6:
+        return None
+    mid = vals[len(vals) // 2]
+    x = round(mid / 10.0) * 10.0
+    return float(x)
+
+
+def eval_secret_side_count_for_boiling(
+    secret: Element, current_candidates: List[Element], x: float
+) -> Optional[Tuple[str, int]]:
+    if secret.boiling_point_K is None:
+        return None
+    side = "le" if secret.boiling_point_K <= x else "gt"
+    cnt = 0
+    for e in current_candidates:
+        if e.boiling_point_K is None:
+            continue
+        if side == "le" and e.boiling_point_K <= x:
+            cnt += 1
+        elif side == "gt" and e.boiling_point_K > x:
+            cnt += 1
+    return side, cnt
 
 
 def choose_next_clue(
@@ -270,8 +367,8 @@ def choose_next_clue(
     attempt: int,
 ) -> Optional[Tuple[str, str, int]]:
     """
-    Choose next clue with the WIDEST possible remaining candidate pool,
-    but IGNORE any clue that doesn't narrow at all (cnt == current_n).
+    Choose next clue with the WIDEST possible remaining candidate pool
+    BUT ignore any clue that doesn't narrow at all.
     """
     remaining_keys = allowed_clue_keys(revealed, attempt)
     if not remaining_keys:
@@ -282,42 +379,73 @@ def choose_next_clue(
     if current_n <= 1:
         return None
 
-    best_key = None
+    best_key: Optional[str] = None
+    best_value: Optional[str] = None
     best_count = -1
 
-    # Pass 1: only clues that strictly narrow (0 < cnt < current_n)
+    # Prefer only strictly narrowing clues (0 < cnt < current_n)
     for k in remaining_keys:
+        if k == "boil_split":
+            x = choose_boiling_split_threshold(current_candidates)
+            if x is None:
+                continue
+            res = eval_secret_side_count_for_boiling(secret, current_candidates, x)
+            if res is None:
+                continue
+            side, cnt = res
+            if 0 < cnt < current_n and cnt > best_count:
+                best_key = "boil_split"
+                best_value = f"{side}|{int(x)}"
+                best_count = cnt
+            continue
+
         v = prop(secret, k)
         cnt = sum(1 for e in current_candidates if prop(e, k) == v)
         if 0 < cnt < current_n and cnt > best_count:
             best_key = k
+            best_value = v
             best_count = cnt
 
-    # Pass 2: fallback if nothing narrows (rare)
+    # Fallback if nothing narrows (rare): pick largest group anyway
     if best_key is None:
         for k in remaining_keys:
+            if k == "boil_split":
+                x = choose_boiling_split_threshold(current_candidates)
+                if x is None:
+                    continue
+                res = eval_secret_side_count_for_boiling(secret, current_candidates, x)
+                if res is None:
+                    continue
+                side, cnt = res
+                if cnt > best_count:
+                    best_key = "boil_split"
+                    best_value = f"{side}|{int(x)}"
+                    best_count = cnt
+                continue
+
             v = prop(secret, k)
             cnt = sum(1 for e in current_candidates if prop(e, k) == v)
             if cnt > best_count:
                 best_key = k
+                best_value = v
                 best_count = cnt
 
-    if best_key is None:
+    if best_key is None or best_value is None:
         return None
-    return best_key, prop(secret, best_key), best_count
+    return best_key, best_value, best_count
 
 
 def reveal_next_clue(secret: Element, elements: List[Element], revealed: Dict[str, str], attempt: int) -> None:
     nxt = choose_next_clue(secret, elements, revealed, attempt)
     if nxt:
-        k, v, _cnt = nxt
+        k, v, _ = nxt
         if k not in revealed:
             revealed[k] = v
             st.session_state.revealed_order.append(k)
 
 
 # =========================================================
-# Definitions panel + CSV export
+# Definitions panel
 # =========================================================
 def definitions_panel():
     with st.expander("📘 Definitions (Categories, Groups, Blocks, Radioactive)", expanded=False):
@@ -332,8 +460,8 @@ def definitions_panel():
 - **Alkali metals (Group 1)**: very reactive metals with one valence electron.
 - **Alkaline earth metals (Group 2)**: reactive metals with two valence electrons.
 - **Halogens (Group 17)**: reactive nonmetals that gain one electron.
-- **Noble gases (Group 18)**: very stable and unreactive.
-- **Lanthanoid or actinoid**: elements in the **lanthanoids (57–71)** or **actinoids (89–103)** series.
+- **Noble gases (Group 18)**: very stable, mostly unreactive nonmetals.
+- **Lanthanoid or actinoid**: elements in **lanthanoids (57–71)** or **actinoids (89–103)**.
 
 **Electron Blocks**
 - **s-block**: Groups 1–2 (plus H, He).
@@ -344,44 +472,11 @@ def definitions_panel():
 **Radioactive (game rule)**
 - **Radioactive: Yes** if the element has **no stable isotopes**.
 - In this game: **Tc (43)** and **Pm (61)** are radioactive, and **all elements with Z ≥ 84** are radioactive.
+
+**Boiling point split (K)**
+- The game may reveal **Boiling point: ≤ X K** or **> X K**, where **X** is chosen to split remaining candidates roughly in half.
 """
         )
-
-
-def build_definitions_grid_csv(elements: List[Element]) -> str:
-    def fmt_list(es: List[Element]) -> str:
-        return "; ".join([f"{e.name} ({e.symbol})" for e in sorted(es, key=lambda x: x.atomic_number)])
-
-    rows: List[Tuple[str, str, List[Element]]] = []
-
-    for cat in ("metal", "nonmetal", "metalloid"):
-        rows.append(("Category", cat, [e for e in elements if e.category3 == cat]))
-
-    fam_names = [
-        "alkali metal (group 1)",
-        "alkaline earth metal (group 2)",
-        "halogen (group 17)",
-        "noble gas (group 18)",
-        "lanthanoid or actinoid",
-        "other/none",
-    ]
-    for name in fam_names:
-        rows.append(("Major group family", name, [e for e in elements if group_family(e) == name]))
-
-    blocks = {"s-block": [], "p-block": [], "d-block": [], "f-block": [], "unknown": []}
-    for e in elements:
-        blocks[block_of(e)].append(e)
-    for b in ("s-block", "p-block", "d-block", "f-block", "unknown"):
-        rows.append(("Electron block", b, blocks[b]))
-
-    rows.append(("Radioactive (game rule)", "Yes", [e for e in elements if is_radioactive(e)]))
-    rows.append(("Radioactive (game rule)", "No", [e for e in elements if not is_radioactive(e)]))
-
-    lines = ["Dimension,Bucket,Count,Elements"]
-    for dim, bucket, es in rows:
-        elements_str = fmt_list(es).replace('"', '""')
-        lines.append(f'{dim},{bucket},{len(es)},"{elements_str}"')
-    return "\n".join(lines)
 
 
 # =========================================================
@@ -396,8 +491,14 @@ def tooltip_guess(e: Element, revealed: Dict[str, str]) -> str:
     if not revealed:
         return "\n".join(lines + ["No clues revealed yet."])
     for k, v in revealed.items():
-        ok = (prop(e, k) == v)
-        lines.append(f"{'✅' if ok else '❌'} {CLUES.get(k, k)}: {v}")
+        if k == "boil_split":
+            op, xs = v.split("|", 1)
+            sign = "≤" if op == "le" else ">"
+            ok = matches(e, {k: v})
+            lines.append(f"{'✅' if ok else '❌'} {CLUES[k]}: {sign} {xs} K")
+        else:
+            ok = (prop(e, k) == v)
+            lines.append(f"{'✅' if ok else '❌'} {CLUES.get(k, k)}: {v}")
     return "\n".join(lines)
 
 
@@ -444,22 +545,28 @@ def compute_hi_lo_special_clue(
 
 
 # =========================================================
-# Debug mode helpers (impact + distributions + delta reduction)
+# Debug helpers (distributions + %)
 # =========================================================
 def _distribution_table(current_candidates: List[Element], clue_key: str) -> List[dict]:
     counts: Dict[str, int] = {}
     for e in current_candidates:
-        v = prop(e, clue_key)
+        if clue_key == "boil_split":
+            # show boiling distribution as raw numeric bands for debug (not used as gameplay buckets)
+            if e.boiling_point_K is None:
+                v = "unknown"
+            else:
+                v = f"{int(round(e.boiling_point_K / 10.0) * 10)} K (rounded)"
+        else:
+            v = prop(e, clue_key)
         counts[v] = counts.get(v, 0) + 1
 
     total = max(len(current_candidates), 1)
-    ordered_keys = sorted(counts.keys(), key=lambda x: (-counts[x], x))
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
 
     out = []
-    for k in ordered_keys:
-        c = counts[k]
+    for v, c in ordered:
         pct = (c / total) * 100.0
-        out.append({"value": k, "count": c, "percent": f"{pct:.1f}%"})
+        out.append({"value": v, "count": c, "percent": f"{pct:.1f}%"})
     return out
 
 
@@ -471,38 +578,45 @@ def show_debug_panel(secret: Element, elements: List[Element], revealed: Dict[st
     # 1) Secret-value impact + delta reduction (debug ignores gating)
     rows = []
     for k in debug_unrevealed_keys(revealed):
-        v = prop(secret, k)
-        cnt = sum(1 for e in current_candidates if prop(e, k) == v)
+        if k == "boil_split":
+            x = choose_boiling_split_threshold(current_candidates)
+            if x is None:
+                continue
+            res = eval_secret_side_count_for_boiling(secret, current_candidates, x)
+            if res is None:
+                continue
+            side, cnt = res
+            secret_value = f"{'≤' if side=='le' else '>'} {int(x)} K"
+        else:
+            secret_value = prop(secret, k)
+            cnt = sum(1 for e in current_candidates if prop(e, k) == secret_value)
+
         reduction = current_n - cnt
         reduction_pct = (reduction / max(current_n, 1)) * 100.0
         rows.append(
             {
                 "clue_key": k,
                 "clue": CLUES.get(k, k),
-                "secret_value": v,
+                "secret_value": secret_value,
                 "candidates_if_revealed": cnt,
                 "reduction": reduction,
                 "reduction_%": f"{reduction_pct:.1f}%",
             }
         )
 
-    order_index = {k: i for i, k in enumerate(CLUE_ORDER)}
-    rows.sort(key=lambda r: (-r["candidates_if_revealed"], order_index.get(r["clue_key"], 999)))
-
+    rows.sort(key=lambda r: (-r["candidates_if_revealed"], r["clue_key"]))
     if rows:
-        st.markdown("**1) Unrevealed clue impact (secret value → candidates) + reduction (delta):**")
+        st.markdown("**1) Unrevealed clue impact (secret value → candidates) + reduction:**")
         st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    # 2) Distribution per clue (debug ignores gating — includes Radioactive from start)
     st.markdown("**2) Distribution per unrevealed clue (value → count, % of candidates):**")
     for k in debug_unrevealed_keys(revealed):
         with st.expander(f"{CLUES.get(k,k)} distribution", expanded=False):
-            dist = _distribution_table(current_candidates, k)
-            st.dataframe(dist, use_container_width=True, hide_index=True)
+            st.dataframe(_distribution_table(current_candidates, k), use_container_width=True, hide_index=True)
 
 
 # =========================================================
-# Animation + tile building
+# Table positioning + tile building
 # =========================================================
 def build_positions(elements: List[Element]):
     main: Dict[Tuple[int, int], Element] = {}
@@ -530,12 +644,16 @@ def make_tiles(
     difficulty: str,
     last_guess_atomic: Optional[int],
     win_anim_pending: bool,
+    status: str,
 ) -> List[dict]:
+    """
+    Tile status values passed to TSX:
+      none, bad, close, correct, hint, lost
+    """
     main, lanth, actin = build_positions(elements)
     easy = (difficulty == "Easy")
     normal_locks = (difficulty == "Normal")
 
-    # compute easy hint deltas (pulse only newly eligible)
     current_hint_set: Set[int] = set()
     if easy and revealed:
         for e in elements:
@@ -547,18 +665,26 @@ def make_tiles(
     st.session_state.prev_hint_set = current_hint_set
 
     def status_of(e: Element) -> str:
+        # reveal secret on loss
+        if status == "lost" and e.atomic_number == secret_atomic and e.atomic_number not in guessed:
+            return "lost"
+
         if e.atomic_number in guessed:
             if e.atomic_number == secret_atomic:
                 return "correct"
             return "close" if matches(e, revealed) else "bad"
+
         if easy and revealed and matches(e, revealed):
             return "hint"
+
         return "none"
 
     def locked_of(e: Element) -> bool:
         return bool(normal_locks and revealed and (e.atomic_number not in guessed) and (not matches(e, revealed)))
 
     def tooltip_of(e: Element) -> str:
+        if status == "lost" and e.atomic_number == secret_atomic:
+            return f"✅ The correct element was {e.name} ({e.symbol}) — atomic #{e.atomic_number}"
         return tooltip_guess(e, revealed) if e.atomic_number in guessed else tooltip_basic(e)
 
     def tile_dict(e: Element, row: str, pos: Optional[int], group: Optional[int], period: Optional[int]) -> dict:
@@ -590,7 +716,7 @@ def make_tiles(
 
 
 # =========================================================
-# Share results + share link
+# Share results helpers
 # =========================================================
 def emoji_for_guess(feedback: str) -> str:
     return {"bad": "🟥", "close": "🟧", "correct": "🟩"}.get(feedback, "⬜")
@@ -647,7 +773,6 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy results"):
 
 
 def copy_link_button():
-    # Tries to copy the top-level URL; falls back to the iframe URL
     components.html(
         """
         <div style="display:flex; gap:10px; align-items:center; font-family:system-ui;">
@@ -680,7 +805,7 @@ def copy_link_button():
 
 
 # =========================================================
-# Debug undo (restore previous snapshots)
+# Debug undo snapshots
 # =========================================================
 def push_snapshot():
     snap = dict(
@@ -733,7 +858,6 @@ def start_new_game(elements: List[Element], game_mode: str):
     st.session_state.ui_message = None
     st.session_state.history = []
 
-    # animation/ux state
     st.session_state.prev_hint_set = set()
     st.session_state.invalid_atomic = None
     st.session_state.last_guess_atomic = None
@@ -780,6 +904,121 @@ def inject_mobile_css():
 
 
 # =========================================================
+# End-game summary (only show properties that were revealed
+# or partially revealed by clues)
+# =========================================================
+def format_boiling_point(bp: Optional[float]) -> str:
+    if bp is None:
+        return "unknown"
+    # show rounded to nearest 1K for readability
+    return f"{bp:.0f} K"
+
+
+def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Dict[str, str]]:
+    """
+    Return rows for the end-game summary table.
+    Include only properties that were revealed or partially revealed.
+    """
+    rows: List[Dict[str, str]] = []
+
+    # Map each clue key to an "actual value" display + attribution
+    for k in st.session_state.revealed_order:
+        if k not in revealed:
+            continue
+
+        if k == "boil_split":
+            op, xs = revealed[k].split("|", 1)
+            sign = "≤" if op == "le" else ">"
+            rows.append(
+                {
+                    "Property": "Boiling point (K)",
+                    "Value": f"{format_boiling_point(secret.boiling_point_K)}",
+                    "Clue": f"{sign} {xs} K",
+                    "Revealed by clue": "✅ (partial)",
+                }
+            )
+            continue
+
+        # standard clue properties (full reveal)
+        if k == "category3":
+            rows.append({"Property": "Category", "Value": secret.category3, "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "state":
+            rows.append({"Property": "State at room temp", "Value": secret.state, "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "noble_gas":
+            rows.append({"Property": "Noble gas", "Value": "Yes" if secret.is_noble_gas else "No", "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "group_family":
+            rows.append({"Property": "Major group family", "Value": group_family(secret), "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "block":
+            rows.append({"Property": "Electron block", "Value": block_of(secret), "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "period":
+            rows.append({"Property": "Period", "Value": str(secret.period), "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "band":
+            rows.append({"Property": "Atomic number range", "Value": atomic_band(secret.atomic_number), "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "radioactive":
+            rows.append({"Property": "Radioactive", "Value": "Yes" if is_radioactive(secret) else "No", "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "origin":
+            rows.append({"Property": "Origin", "Value": origin_natural_vs_synthetic(secret), "Clue": revealed[k], "Revealed by clue": "✅"})
+        elif k == "metal_group":
+            rows.append({"Property": "Metal group", "Value": metal_group(secret), "Clue": revealed[k], "Revealed by clue": "✅"})
+
+    return rows
+
+
+def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
+    st.subheader(f"🧾 Element Summary — {secret.name} ({secret.symbol})")
+
+    # image + key facts
+    col1, col2 = st.columns([1, 2], gap="large")
+
+    with col1:
+        if secret.bohr_model_image:
+            try:
+                st.image(secret.bohr_model_image, caption=f"Bohr model — {secret.name} ({secret.symbol})", use_container_width=True)
+            except Exception:
+                st.caption("Bohr model image unavailable.")
+        else:
+            st.caption("No Bohr model image available in dataset.")
+
+    with col2:
+        st.markdown(
+            f"""
+**Atomic number:** {secret.atomic_number}  
+**Category:** {secret.category3}  
+**Major group family:** {group_family(secret)}  
+**Electron block:** {block_of(secret)}  
+**State at room temp:** {secret.state}  
+**Boiling point:** {format_boiling_point(secret.boiling_point_K)}  
+**Radioactive (game rule):** {"Yes" if is_radioactive(secret) else "No"}  
+"""
+        )
+
+    rows = revealed_property_rows(secret, revealed)
+    if rows:
+        st.markdown("**What the clues revealed (and/or implied):**")
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No clues were revealed in this round (rare).")
+
+    st.subheader("Did you know?")
+    bits = []
+    if secret.discovered_by:
+        bits.append(f"**Discovered by:** {secret.discovered_by}")
+    if secret.named_by:
+        bits.append(f"**Named by:** {secret.named_by}")
+    if bits:
+        st.markdown("  \n".join(bits))
+
+    if secret.summary:
+        s = secret.summary.strip()
+        if len(s) > 650:
+            s = s[:650].rsplit(" ", 1)[0] + "…"
+        st.write(s)
+
+    if secret.source:
+        st.caption(f"Source: {secret.source}")
+
+
+# =========================================================
 # Main app
 # =========================================================
 def main():
@@ -789,7 +1028,7 @@ def main():
     st.title("🧪 Element Guess")
     st.caption("Click an element tile to guess. Colors show your progress.")
 
-    # How to play (small upgrade)
+    # How to play expander
     with st.expander("❓ How to play", expanded=False):
         st.markdown(
             """
@@ -805,11 +1044,12 @@ def main():
 - 🟧 **Amber** — matches clues, but not the answer
 - 🟩 **Green** — correct
 - 🟦 **Blue** — possible candidates (Easy mode)
+- ⬛ **Charcoal** — revealed answer (loss)
 
 **Difficulty:**
 - **Easy:** highlights valid candidates
 - **Normal:** invalid guesses are locked
-- **Hard:** invalid guesses are rejected (no explanation)
+- **Hard:** invalid guesses are rejected (no explanation; no guess consumed)
 """
         )
 
@@ -820,7 +1060,6 @@ def main():
 
     can_change_settings = (st.session_state.status in ("won", "lost")) or (len(st.session_state.guesses) == 0)
 
-    # We only allow debug mode in dev, unless you explicitly set STREAMLIT_ENV!=prod
     debug_mode = False
 
     with st.sidebar:
@@ -867,13 +1106,7 @@ def main():
                             current_idx = i
                             break
 
-                choice = st.selectbox(
-                    "Force target element",
-                    options,
-                    index=current_idx,
-                    help="Overrides the secret element for analysis only (does not change real secret).",
-                )
-
+                choice = st.selectbox("Force target element", options, index=current_idx)
                 if choice == "— none —":
                     st.session_state.debug_secret_atomic = None
                 else:
@@ -889,7 +1122,6 @@ def main():
             start_new_game(elements, st.session_state.game_mode)
             st.rerun()
 
-    # Date label for Daily
     if st.session_state.game_mode == "Daily":
         today = dt.date.today()
         st.info(f"📅 Today’s date: {today:%A, %d %B %Y}")
@@ -902,7 +1134,6 @@ def main():
     if debug_mode and st.session_state.debug_secret_atomic:
         secret = by_atomic[st.session_state.debug_secret_atomic]
         st.warning(f"🧪 Debug mode: Target overridden to {secret.name} ({secret.symbol})")
-        st.info("🔍 Debug override active — results and Daily integrity are NOT affected.")
     else:
         secret = st.session_state.secret
 
@@ -929,7 +1160,7 @@ def main():
         with st.expander("🛠 Debug", expanded=True):
             show_debug_panel(secret, elements, st.session_state.revealed, st.session_state.attempt)
 
-    # One-shot animation signals
+    # One-shot UI triggers
     invalid_atomic_to_send = st.session_state.invalid_atomic
     last_guess_to_send = st.session_state.last_guess_atomic
     win_anim_pending = bool(st.session_state.win_anim_pending)
@@ -942,6 +1173,7 @@ def main():
         difficulty=st.session_state.difficulty,
         last_guess_atomic=last_guess_to_send,
         win_anim_pending=win_anim_pending,
+        status=st.session_state.status,
     )
 
     click = periodic_table(
@@ -952,6 +1184,7 @@ def main():
             "close": "#F59E0B",
             "correct": "#16A34A",
             "hint": "#3B82F6",
+            "lost": "#111827",  # charcoal reveal on loss
         },
         disabled=(st.session_state.status != "playing"),
         invalidAtomic=invalid_atomic_to_send,
@@ -966,7 +1199,7 @@ def main():
     if win_anim_pending:
         st.session_state.win_anim_pending = False
 
-    # Click handling
+    # Handle clicks
     if click and st.session_state.status == "playing":
         atomic = click.get("atomic")
         nonce = click.get("nonce")
@@ -982,7 +1215,7 @@ def main():
 
             e = by_atomic[atomic]
 
-            # Normal + Hard: invalid guess doesn't consume a guess; shake + message; keep clues visible
+            # Normal + Hard: invalid guess doesn't consume a guess; shake + message
             if st.session_state.revealed and (not matches(e, st.session_state.revealed)):
                 if st.session_state.difficulty in ("Normal", "Hard"):
                     st.session_state.invalid_atomic = atomic
@@ -1020,14 +1253,23 @@ def main():
 
             st.rerun()
 
-    # Revealed clues — numbered, chronological order
+    # Revealed clues — numbered, chronological
     if st.session_state.revealed or special_hi_lo:
         st.subheader("Revealed clues")
         i = 1
         for k in st.session_state.revealed_order:
-            if k in st.session_state.revealed:
-                st.write(f"{i}. **{CLUES[k]}:** {st.session_state.revealed[k]}")
-                i += 1
+            if k not in st.session_state.revealed:
+                continue
+
+            v = st.session_state.revealed[k]
+            if k == "boil_split":
+                op, xs = v.split("|", 1)
+                sign = "≤" if op == "le" else ">"
+                st.write(f"{i}. **{CLUES[k]}:** {sign} {xs} K")
+            else:
+                st.write(f"{i}. **{CLUES[k]}:** {v}")
+            i += 1
+
         if special_hi_lo:
             st.write(f"{i}. **Special clue:** {special_hi_lo}")
 
@@ -1036,35 +1278,20 @@ def main():
         labels = [f"{by_atomic[a].name} ({by_atomic[a].symbol})" for a in st.session_state.guesses]
         st.write(" • ".join(labels))
 
-    # Share link button (small upgrade)
+    # Share link section
     st.subheader("🔗 Share this game")
     copy_link_button()
     st.caption("Tip: You can also copy the URL from your browser’s address bar.")
 
-    # End states + Fun fact + share results
+    # End states + summary + share results
     if st.session_state.status in ("won", "lost"):
         if st.session_state.status == "won":
             st.success(f"🎉 Correct! It was **{secret.name} ({secret.symbol})**, atomic #{secret.atomic_number}.")
         else:
             st.error(f"😅 Out of guesses! It was **{secret.name} ({secret.symbol})**, atomic #{secret.atomic_number}.")
+            st.caption("⬛ The answer has been revealed on the periodic table.")
 
-        st.subheader("Did you know?")
-        if secret.discovered_by or secret.named_by:
-            bits = []
-            if secret.discovered_by:
-                bits.append(f"**Discovered by:** {secret.discovered_by}")
-            if secret.named_by:
-                bits.append(f"**Named by:** {secret.named_by}")
-            st.markdown("  \n".join(bits))
-
-        if secret.summary:
-            s = secret.summary.strip()
-            if len(s) > 520:
-                s = s[:520].rsplit(" ", 1)[0] + "…"
-            st.write(s)
-
-        if secret.source:
-            st.caption(f"Source: {secret.source}")
+        render_endgame_summary(secret, st.session_state.revealed)
 
         st.subheader("📋 Share results")
         share_text = build_share_text()
@@ -1072,13 +1299,12 @@ def main():
         with st.expander("Preview share text", expanded=False):
             st.code(share_text)
     else:
-        st.caption("Finish the game to unlock Share Results + Fun Fact.")
+        st.caption("Finish the game to unlock the Element Summary + Share Results.")
 
-    # Footer (small upgrade)
+    # Footer
     st.markdown("---")
     st.caption(f"🧪 Element Guess • {APP_VERSION} • GitHub: {GITHUB_URL}")
 
 
 if __name__ == "__main__":
     main()
-
