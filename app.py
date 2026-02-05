@@ -14,6 +14,7 @@ import streamlit.components.v1 as components
 
 # deploy bump: local_storage assets path fix
 
+# deploy bump
 
 # Your custom periodic-table component
 from element_tiles import periodic_table
