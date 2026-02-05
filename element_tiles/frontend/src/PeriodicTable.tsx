@@ -29,7 +29,9 @@ type Legend = {
 };
 
 function fgColor(status: Tile["status"]) {
-  return status === "bad" || status === "correct" ? "white" : "#111827";
+  return status === "bad" || status === "correct" || status === "lost"
+  ? "white"
+  : "#111827";
 }
 
 const PeriodicTable = (props: ComponentProps) => {
@@ -40,6 +42,7 @@ const PeriodicTable = (props: ComponentProps) => {
     close: "#F59E0B",
     correct: "#16A34A",
     hint: "#3B82F6",
+    lost: "#111827",
   };
   const disabled: boolean = !!props.args["disabled"];
   const invalidAtomic: number | null = props.args["invalidAtomic"] ?? null;
