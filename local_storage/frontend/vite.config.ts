@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "dist",
-     emptyOutDir: true,
-     assetsInlineLimit: 10000000
+    emptyOutDir: true,
+    assetsInlineLimit: 10000000, // inline everything (10MB)
+    cssCodeSplit: false
   }
 });
