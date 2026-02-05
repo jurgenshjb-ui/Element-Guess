@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import random
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from element_tiles import periodic_table
 # =========================================================
 # Public app metadata
 # =========================================================
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.3.0"
 GITHUB_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO"
 
 # =========================================================
@@ -50,6 +51,7 @@ class Element:
     source: str
     is_noble_gas: bool
     boiling_point_K: Optional[float]
+    melting_point_K: Optional[float]
     bohr_model_image: str
 
 
@@ -181,6 +183,7 @@ def load_elements(path: str = "PeriodicTableJSON.json") -> List[Element]:
 
         is_ng = bool(r.get("is_noble_gas")) if ("is_noble_gas" in r) else compute_is_noble_gas(name, group)
 
+        # Boiling point (K)
         bp = r.get("boiling_point_K", None)
         if bp is None and isinstance(r.get("boil"), (int, float)):
             bp = float(r["boil"])
@@ -188,6 +191,15 @@ def load_elements(path: str = "PeriodicTableJSON.json") -> List[Element]:
             bp = float(bp)
         else:
             bp = None
+
+        # Melting point (K)
+        mp = r.get("melting_point_K", None)
+        if mp is None and isinstance(r.get("melt"), (int, float)):
+            mp = float(r["melt"])
+        elif isinstance(mp, (int, float)):
+            mp = float(mp)
+        else:
+            mp = None
 
         bohr_img = (r.get("bohr_model_image") or "").strip()
 
@@ -206,6 +218,7 @@ def load_elements(path: str = "PeriodicTableJSON.json") -> List[Element]:
                 source=(r.get("source") or "").strip(),
                 is_noble_gas=is_ng,
                 boiling_point_K=bp,
+                melting_point_K=mp,
                 bohr_model_image=bohr_img,
             )
         )
@@ -225,6 +238,7 @@ CLUES: Dict[str, str] = {
     "state": "State at room temp",
     "noble_gas": "Noble gas",
     "boil_split": "Boiling point (K)",
+    "melt_split": "Melting point (K)",
     "radioactive": "Radioactive",
     "origin": "Origin (natural / synthetic)",
     "metal_group": "Metal group",
@@ -239,6 +253,7 @@ CLUE_ORDER = [
     "state",        # phase first
     "noble_gas",    # only eligible if state == gas
     "boil_split",
+    "melt_split",
     "radioactive",
     "origin",
     "metal_group",
@@ -269,18 +284,29 @@ def prop(e: Element, k: str) -> str:
     return "unknown"
 
 
+def _temp_value_K(e: Element, kind: str) -> Optional[float]:
+    if kind == "boil":
+        return e.boiling_point_K
+    if kind == "melt":
+        return e.melting_point_K
+    return None
+
+
 def matches(e: Element, revealed: Dict[str, str]) -> bool:
     for k, v in revealed.items():
-        if k == "boil_split":
-            if e.boiling_point_K is None:
+        if k in ("boil_split", "melt_split"):
+            kind = "boil" if k == "boil_split" else "melt"
+            val = _temp_value_K(e, kind)
+            if val is None:
                 return False
             op, xs = v.split("|", 1)
             x = float(xs)
-            if op == "le" and not (e.boiling_point_K <= x):
+            if op == "le" and not (val <= x):
                 return False
-            if op == "gt" and not (e.boiling_point_K > x):
+            if op == "gt" and not (val > x):
                 return False
             continue
+
         if prop(e, k) != v:
             return False
     return True
@@ -289,9 +315,22 @@ def matches(e: Element, revealed: Dict[str, str]) -> bool:
 def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
     keys = [k for k in CLUE_ORDER if k not in revealed]
 
-    # Game rule: radioactive can appear only after 3rd guess
+    # Radioactive only after guess 3
     if attempt < 3 and "radioactive" in keys:
         keys.remove("radioactive")
+
+    # Temperature splits only after guess 3
+    if attempt < 3:
+        if "boil_split" in keys:
+            keys.remove("boil_split")
+        if "melt_split" in keys:
+            keys.remove("melt_split")
+
+    # Temperature family mutual exclusion: only ever reveal ONE of them
+    if "boil_split" in revealed and "melt_split" in keys:
+        keys.remove("melt_split")
+    if "melt_split" in revealed and "boil_split" in keys:
+        keys.remove("boil_split")
 
     # origin only after radioactive yes
     if "origin" in keys and revealed.get("radioactive") != "Yes":
@@ -301,7 +340,7 @@ def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
     if "metal_group" in keys and revealed.get("category3") != "metal":
         keys.remove("metal_group")
 
-    # noble gas only if state revealed and gas
+    # noble gas only if state == gas
     if "noble_gas" in keys and revealed.get("state") != "gas":
         keys.remove("noble_gas")
 
@@ -309,45 +348,145 @@ def allowed_clue_keys(revealed: Dict[str, str], attempt: int) -> List[str]:
 
 
 def debug_unrevealed_keys(revealed: Dict[str, str]) -> List[str]:
-    # Debug ignores gameplay gating (shows potential from start)
-    return [k for k in CLUE_ORDER if k not in revealed]
+    # Debug ignores gameplay gating, but keeps "only one temperature split" logic to avoid confusion
+    keys = [k for k in CLUE_ORDER if k not in revealed]
+    if "boil_split" in revealed and "melt_split" in keys:
+        keys.remove("melt_split")
+    if "melt_split" in revealed and "boil_split" in keys:
+        keys.remove("boil_split")
+    return keys
 
 
 # =========================================================
-# Dynamic boiling split
+# Entropy scoring
 # =========================================================
-def choose_boiling_split_threshold(current_candidates: List[Element]) -> Optional[float]:
-    vals = sorted([e.boiling_point_K for e in current_candidates if e.boiling_point_K is not None])
-    if len(vals) < 6:
+def _entropy_from_counts(counts: List[int]) -> float:
+    total = sum(counts)
+    if total <= 0:
+        return 0.0
+    h = 0.0
+    for c in counts:
+        if c <= 0:
+            continue
+        p = c / total
+        h -= p * math.log2(p)
+    return h
+
+
+def _distribution_for_clue(
+    current_candidates: List[Element],
+    clue_key: str,
+    temp_split_thresholds: Dict[str, Tuple[Optional[float], int, int]],
+) -> Tuple[Dict[str, int], int]:
+    """
+    Returns (value_counts, total_considered).
+    For categorical clues: counts of each value.
+    For temp split clues: counts for buckets ["≤X", ">X", "unknown"] (unknown counted).
+    """
+    if clue_key not in ("boil_split", "melt_split"):
+        counts: Dict[str, int] = {}
+        for e in current_candidates:
+            v = prop(e, clue_key)
+            counts[v] = counts.get(v, 0) + 1
+        return counts, len(current_candidates)
+
+    kind = "boil" if clue_key == "boil_split" else "melt"
+    x, known, total = temp_split_thresholds.get(kind, (None, 0, len(current_candidates)))
+    counts = {"≤X": 0, ">X": 0, "unknown": 0}
+    if x is None:
+        return counts, total
+
+    for e in current_candidates:
+        val = _temp_value_K(e, kind)
+        if val is None:
+            counts["unknown"] += 1
+        elif val <= x:
+            counts["≤X"] += 1
+        else:
+            counts[">X"] += 1
+
+    return counts, total
+
+
+# =========================================================
+# Temperature split helpers (rounded to nearest 100 K)
+# + guardrail: require >=70% known among current candidates
+# =========================================================
+def _choose_temp_split_threshold(current_candidates: List[Element], kind: str) -> Tuple[Optional[float], int, int]:
+    vals = [(_temp_value_K(e, kind)) for e in current_candidates]
+    known_vals = sorted([v for v in vals if v is not None])
+    total = len(current_candidates)
+    known = len(known_vals)
+
+    if total == 0 or known < 6:
+        return None, known, total
+
+    # If too many unknowns, skip this clue (avoid "gotcha" elimination)
+    if (known / total) < 0.70:
+        return None, known, total
+
+    median = known_vals[len(known_vals) // 2]
+    x = round(median / 100.0) * 100.0
+    return float(x), known, total
+
+
+def _secret_temp_bucket(secret: Element, clue_key: str, x: float) -> Optional[str]:
+    kind = "boil" if clue_key == "boil_split" else "melt"
+    val = _temp_value_K(secret, kind)
+    if val is None:
         return None
-    mid = vals[len(vals) // 2]
-    x = round(mid / 10.0) * 10.0
-    return float(x)
+    return "≤X" if val <= x else ">X"
 
 
-def eval_secret_side_count_for_boiling(
-    secret: Element, current_candidates: List[Element], x: float
+def _count_candidates_for_secret_temp_value(
+    secret: Element, current_candidates: List[Element], clue_key: str, x: float
 ) -> Optional[Tuple[str, int]]:
-    if secret.boiling_point_K is None:
+    bucket = _secret_temp_bucket(secret, clue_key, x)
+    if bucket is None:
         return None
-    side = "le" if secret.boiling_point_K <= x else "gt"
+    kind = "boil" if clue_key == "boil_split" else "melt"
     cnt = 0
     for e in current_candidates:
-        if e.boiling_point_K is None:
+        val = _temp_value_K(e, kind)
+        if val is None:
             continue
-        if side == "le" and e.boiling_point_K <= x:
+        if bucket == "≤X" and val <= x:
             cnt += 1
-        elif side == "gt" and e.boiling_point_K > x:
+        elif bucket == ">X" and val > x:
             cnt += 1
-    return side, cnt
+    return bucket, cnt
 
 
-def choose_next_clue(
+def _deterministic_temp_tiebreak(game_mode: str, seed: Optional[int]) -> int:
+    """
+    Returns 0 or 1 deterministically per game.
+    Daily: based on date. Endless: based on seed.
+    """
+    if game_mode == "Daily":
+        d = dt.date.today().toordinal()
+        return d % 2
+    # Endless
+    s = seed or 0
+    return s % 2
+
+
+def choose_next_clue_entropy(
     secret: Element,
     elements: List[Element],
     revealed: Dict[str, str],
     attempt: int,
-) -> Optional[Tuple[str, str, int]]:
+    game_mode: str,
+    seed: Optional[int],
+) -> Optional[Tuple[str, str, int, float]]:
+    """
+    Choose next clue by:
+      1) Only consider clues that STRICTLY NARROW (0 < cnt < current_n), otherwise ignore.
+      2) Score by highest entropy of value distribution among current candidates.
+      3) Tie-break by:
+         a) larger secret-bucket candidate count (keeps next pool wider)
+         b) larger minimum bucket size (avoids 99/1)
+         c) deterministic temperature tie-break when boil vs melt are still tied
+    """
     remaining_keys = allowed_clue_keys(revealed, attempt)
     if not remaining_keys:
         return None
@@ -357,69 +496,103 @@ def choose_next_clue(
     if current_n <= 1:
         return None
 
-    best_key: Optional[str] = None
-    best_value: Optional[str] = None
-    best_count = -1
+    # Precompute possible temp thresholds
+    temp_thresholds = {
+        "boil": _choose_temp_split_threshold(current_candidates, "boil"),
+        "melt": _choose_temp_split_threshold(current_candidates, "melt"),
+    }
 
-    # Prefer strictly narrowing clues; maximize remaining pool
+    best: Optional[Tuple[str, str, int, float, int, int]] = None
+    # best tuple: (key, value, cnt_secret, entropy, min_bucket, temp_tiebreak_rank)
+
     for k in remaining_keys:
-        if k == "boil_split":
-            x = choose_boiling_split_threshold(current_candidates)
+        if k in ("boil_split", "melt_split"):
+            kind = "boil" if k == "boil_split" else "melt"
+            x, known, total = temp_thresholds[kind]
             if x is None:
                 continue
-            res = eval_secret_side_count_for_boiling(secret, current_candidates, x)
+
+            res = _count_candidates_for_secret_temp_value(secret, current_candidates, k, x)
             if res is None:
                 continue
-            side, cnt = res
-            if 0 < cnt < current_n and cnt > best_count:
-                best_key = "boil_split"
-                best_value = f"{side}|{int(x)}"
-                best_count = cnt
-            continue
+            bucket, cnt = res
 
-        v = prop(secret, k)
-        cnt = sum(1 for e in current_candidates if prop(e, k) == v)
-        if 0 < cnt < current_n and cnt > best_count:
-            best_key = k
-            best_value = v
-            best_count = cnt
-
-    # Fallback if nothing narrows
-    if best_key is None:
-        for k in remaining_keys:
-            if k == "boil_split":
-                x = choose_boiling_split_threshold(current_candidates)
-                if x is None:
-                    continue
-                res = eval_secret_side_count_for_boiling(secret, current_candidates, x)
-                if res is None:
-                    continue
-                side, cnt = res
-                if cnt > best_count:
-                    best_key = "boil_split"
-                    best_value = f"{side}|{int(x)}"
-                    best_count = cnt
+            # Must strictly narrow
+            if not (0 < cnt < current_n):
                 continue
 
-            v = prop(secret, k)
-            cnt = sum(1 for e in current_candidates if prop(e, k) == v)
-            if cnt > best_count:
-                best_key = k
-                best_value = v
-                best_count = cnt
+            counts_dict, _ = _distribution_for_clue(current_candidates, k, temp_thresholds)
+            ent = _entropy_from_counts(list(counts_dict.values()))
+            min_bucket = min([c for c in counts_dict.values() if c > 0], default=0)
 
-    if best_key is None or best_value is None:
+            op = "le" if bucket == "≤X" else "gt"
+            v = f"{op}|{int(x)}"
+
+            # deterministic tie-break only when needed (boil vs melt)
+            temp_rank = _deterministic_temp_tiebreak(game_mode, seed)
+            # For ranking, let boil be 0, melt be 1; flip by temp_rank to alternate
+            # If temp_rank==0 => prefer boil; if 1 => prefer melt
+            prefer_melt = (temp_rank == 1)
+            this_is_melt = (k == "melt_split")
+            tie_rank = 0 if (this_is_melt == prefer_melt) else 1
+
+            cand = (k, v, cnt, ent, min_bucket, tie_rank)
+        else:
+            secret_value = prop(secret, k)
+            cnt = sum(1 for e in current_candidates if prop(e, k) == secret_value)
+
+            # Must strictly narrow
+            if not (0 < cnt < current_n):
+                continue
+
+            counts_dict, _ = _distribution_for_clue(current_candidates, k, temp_thresholds)
+            ent = _entropy_from_counts(list(counts_dict.values()))
+            min_bucket = min([c for c in counts_dict.values() if c > 0], default=0)
+            cand = (k, secret_value, cnt, ent, min_bucket, 0)
+
+        if best is None:
+            best = cand
+        else:
+            # Compare by entropy first, then keep next pool wide, then avoid tiny buckets, then temp tie rank
+            _, _, cnt_b, ent_b, min_b, tie_b = best
+            _, _, cnt_c, ent_c, min_c, tie_c = cand
+
+            if ent_c > ent_b + 1e-9:
+                best = cand
+            elif abs(ent_c - ent_b) <= 1e-9:
+                if cnt_c > cnt_b:
+                    best = cand
+                elif cnt_c == cnt_b:
+                    if min_c > min_b:
+                        best = cand
+                    elif min_c == min_b:
+                        # only meaningful for temp split vs temp split
+                        if tie_c < tie_b:
+                            best = cand
+
+    if best is None:
+        # If nothing strictly narrows, return None (we skip useless clues)
         return None
-    return best_key, best_value, best_count
+
+    k, v, cnt, ent, _, _ = best
+    return k, v, cnt, ent
 
 
-def reveal_next_clue(secret: Element, elements: List[Element], revealed: Dict[str, str], attempt: int) -> None:
-    nxt = choose_next_clue(secret, elements, revealed, attempt)
-    if nxt:
-        k, v, _ = nxt
-        if k not in revealed:
-            revealed[k] = v
-            st.session_state.revealed_order.append(k)
+def reveal_next_clue(secret: Element, elements: List[Element], attempt: int) -> None:
+    nxt = choose_next_clue_entropy(
+        secret=secret,
+        elements=elements,
+        revealed=st.session_state.revealed,
+        attempt=attempt,
+        game_mode=st.session_state.game_mode,
+        seed=st.session_state.seed,
+    )
+    if not nxt:
+        return
+    k, v, _, _ = nxt
+    if k not in st.session_state.revealed:
+        st.session_state.revealed[k] = v
+        st.session_state.revealed_order.append(k)
 
 
 # =========================================================
@@ -451,9 +624,10 @@ def definitions_panel():
 - **Tc (43)** and **Pm (61)** are radioactive
 - **All elements with Z ≥ 84** are radioactive
 
-**Boiling point split**
-- Reveals **Boiling point: ≤ X K** or **> X K**
-- **X** is chosen to split remaining candidates roughly in half.
+**Temperature split clues**
+- Reveals **Boiling point: ≤ X K** or **> X K**, *or* **Melting point: ≤ X K** or **> X K**
+- Only one temperature clue appears per game (never both)
+- **X** is chosen to split remaining candidates roughly in half (rounded to nearest **100 K**)
 """
         )
 
@@ -470,7 +644,7 @@ def tooltip_guess(e: Element, revealed: Dict[str, str]) -> str:
     if not revealed:
         return "\n".join(lines + ["No clues revealed yet."])
     for k, v in revealed.items():
-        if k == "boil_split":
+        if k in ("boil_split", "melt_split"):
             op, xs = v.split("|", 1)
             sign = "≤" if op == "le" else ">"
             ok = matches(e, {k: v})
@@ -482,7 +656,7 @@ def tooltip_guess(e: Element, revealed: Dict[str, str]) -> str:
 
 
 # =========================================================
-# Daily / Infinite selection
+# Daily / Endless selection
 # =========================================================
 def pick_daily(elements: List[Element], date: Optional[dt.date] = None) -> Element:
     date = date or dt.date.today()
@@ -491,14 +665,14 @@ def pick_daily(elements: List[Element], date: Optional[dt.date] = None) -> Eleme
     return elements[idx]
 
 
-def pick_infinite(elements: List[Element], seed: int) -> Element:
+def pick_endless(elements: List[Element], seed: int) -> Element:
     return random.Random(seed).choice(elements)
 
 
 # =========================================================
 # Special clue (Higher / Lower) with toggle
 # =========================================================
-def compute_hi_lo_special_clue(
+def compute_special_atomic_clue(
     enabled: bool,
     elements: List[Element],
     revealed: Dict[str, str],
@@ -528,15 +702,22 @@ def compute_hi_lo_special_clue(
 # =========================================================
 def _distribution_table(current_candidates: List[Element], clue_key: str) -> List[dict]:
     counts: Dict[str, int] = {}
-    for e in current_candidates:
-        if clue_key == "boil_split":
-            if e.boiling_point_K is None:
+
+    if clue_key in ("boil_split", "melt_split"):
+        kind = "boil" if clue_key == "boil_split" else "melt"
+        # For debug, show rounded-to-100 buckets (not split ≤/>)
+        for e in current_candidates:
+            val = _temp_value_K(e, kind)
+            if val is None:
                 v = "unknown"
             else:
-                v = f"{int(round(e.boiling_point_K / 10.0) * 10)} K (rounded)"
-        else:
+                bucket = int(round(val / 100.0) * 100)
+                v = f"{bucket} K"
+            counts[v] = counts.get(v, 0) + 1
+    else:
+        for e in current_candidates:
             v = prop(e, clue_key)
-        counts[v] = counts.get(v, 0) + 1
+            counts[v] = counts.get(v, 0) + 1
 
     total = max(len(current_candidates), 1)
     ordered = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
@@ -555,16 +736,23 @@ def show_debug_panel(secret: Element, elements: List[Element], revealed: Dict[st
 
     # 1) Secret-value impact + delta reduction (debug ignores gating)
     rows = []
+    # Precompute temp thresholds for "if revealed now" impact
+    temp_thresholds = {
+        "boil": _choose_temp_split_threshold(current_candidates, "boil"),
+        "melt": _choose_temp_split_threshold(current_candidates, "melt"),
+    }
+
     for k in debug_unrevealed_keys(revealed):
-        if k == "boil_split":
-            x = choose_boiling_split_threshold(current_candidates)
+        if k in ("boil_split", "melt_split"):
+            kind = "boil" if k == "boil_split" else "melt"
+            x, known, total = temp_thresholds[kind]
             if x is None:
                 continue
-            res = eval_secret_side_count_for_boiling(secret, current_candidates, x)
+            res = _count_candidates_for_secret_temp_value(secret, current_candidates, k, x)
             if res is None:
                 continue
-            side, cnt = res
-            secret_value = f"{'≤' if side=='le' else '>'} {int(x)} K"
+            bucket, cnt = res
+            secret_value = f"{'≤' if bucket=='≤X' else '>'} {int(x)} K"
         else:
             secret_value = prop(secret, k)
             cnt = sum(1 for e in current_candidates if prop(e, k) == secret_value)
@@ -791,6 +979,7 @@ def push_snapshot():
         invalid_atomic=st.session_state.invalid_atomic,
         win_anim_pending=st.session_state.win_anim_pending,
         stats_recorded=st.session_state.stats_recorded,
+        board_nonce=st.session_state.board_nonce,
     )
     st.session_state.history.append(snap)
 
@@ -811,6 +1000,7 @@ def undo_snapshot():
     st.session_state.invalid_atomic = snap["invalid_atomic"]
     st.session_state.win_anim_pending = snap["win_anim_pending"]
     st.session_state.stats_recorded = snap["stats_recorded"]
+    st.session_state.board_nonce = snap["board_nonce"]
 
 
 # =========================================================
@@ -882,7 +1072,12 @@ def stats_panel():
 # =========================================================
 # State helpers
 # =========================================================
+def _bump_board_nonce():
+    st.session_state.board_nonce = int(st.session_state.get("board_nonce", 0)) + 1
+
+
 def start_new_game(elements: List[Element], game_mode: str):
+    # Fully reset game state (including UI-only markers)
     st.session_state.status = "playing"
     st.session_state.guesses = []
     st.session_state.guess_feedback = []
@@ -892,17 +1087,16 @@ def start_new_game(elements: List[Element], game_mode: str):
     st.session_state.max_guesses = 7
     st.session_state.last_click_nonce = None
     st.session_state.last_valid_guess_atomic = None
-
+    st.session_state.last_guess_atomic = None
+    st.session_state.invalid_atomic = None
+    st.session_state.win_anim_pending = False
     st.session_state.ui_message = None
     st.session_state.history = []
-
     st.session_state.prev_hint_set = set()
-    st.session_state.invalid_atomic = None
-    st.session_state.last_guess_atomic = None
-    st.session_state.win_anim_pending = False
-
-    # Important: prevents double-recording stats on reruns
     st.session_state.stats_recorded = False
+
+    # Force the component to fully remount (prevents "last guess" ghosting)
+    _bump_board_nonce()
 
     if game_mode == "Daily":
         st.session_state.secret = pick_daily(elements)
@@ -910,18 +1104,19 @@ def start_new_game(elements: List[Element], game_mode: str):
     else:
         seed = random.randrange(1_000_000_000)
         st.session_state.seed = seed
-        st.session_state.secret = pick_infinite(elements, seed)
+        st.session_state.secret = pick_endless(elements, seed)
 
 
 def ensure_state(elements: List[Element]):
     if "game_mode" not in st.session_state:
         st.session_state.game_mode = "Daily"
         st.session_state.difficulty = "Normal"
-        st.session_state.enable_special_clue = True
+        st.session_state.enable_special_clue = False  # OFF by default (per request)
         st.session_state.debug_secret_atomic = None
+        st.session_state.board_nonce = 0
         start_new_game(elements, st.session_state.game_mode)
 
-    st.session_state.setdefault("enable_special_clue", True)
+    st.session_state.setdefault("enable_special_clue", False)
     st.session_state.setdefault("debug_secret_atomic", None)
     st.session_state.setdefault("ui_message", None)
     st.session_state.setdefault("history", [])
@@ -931,6 +1126,7 @@ def ensure_state(elements: List[Element]):
     st.session_state.setdefault("last_guess_atomic", None)
     st.session_state.setdefault("win_anim_pending", False)
     st.session_state.setdefault("stats_recorded", False)
+    st.session_state.setdefault("board_nonce", 0)
 
     init_stats()
 
@@ -950,10 +1146,8 @@ def inject_mobile_css():
 # =========================================================
 # End-game summary (Did you know ABOVE Element Summary)
 # =========================================================
-def format_boiling_point(bp: Optional[float]) -> str:
-    if bp is None:
-        return "unknown"
-    return f"{bp:.0f} K"
+def format_K(val: Optional[float]) -> str:
+    return "unknown" if val is None else f"{val:.0f} K"
 
 
 def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Dict[str, str]]:
@@ -962,13 +1156,15 @@ def revealed_property_rows(secret: Element, revealed: Dict[str, str]) -> List[Di
         if k not in revealed:
             continue
 
-        if k == "boil_split":
+        if k in ("boil_split", "melt_split"):
+            kind = "Boiling point (K)" if k == "boil_split" else "Melting point (K)"
             op, xs = revealed[k].split("|", 1)
             sign = "≤" if op == "le" else ">"
+            actual = secret.boiling_point_K if k == "boil_split" else secret.melting_point_K
             rows.append(
                 {
-                    "Property": "Boiling point (K)",
-                    "Value": f"{format_boiling_point(secret.boiling_point_K)}",
+                    "Property": kind,
+                    "Value": format_K(actual),
                     "Clue": f"{sign} {xs} K",
                     "Revealed by clue": "✅ (partial)",
                 }
@@ -1043,7 +1239,8 @@ def render_endgame_summary(secret: Element, revealed: Dict[str, str]):
 **Major group family:** {group_family(secret)}  
 **Electron block:** {block_of(secret)}  
 **State at room temp:** {secret.state}  
-**Boiling point:** {format_boiling_point(secret.boiling_point_K)}  
+**Boiling point:** {format_K(secret.boiling_point_K)}  
+**Melting point:** {format_K(secret.melting_point_K)}  
 **Radioactive (game rule):** {"Yes" if is_radioactive(secret) else "No"}  
 """
         )
@@ -1082,6 +1279,9 @@ def main():
 - **Easy:** highlights valid candidates
 - **Normal:** invalid guesses are locked
 - **Hard:** invalid guesses are rejected (no explanation; no guess consumed)
+
+**Special Clue: Atomic Number**
+- If enabled, may reveal whether the answer’s atomic number is higher or lower than your last valid guess.
 """
         )
 
@@ -1094,13 +1294,14 @@ def main():
 
     debug_mode = False
 
+    # ---- Sidebar: order as requested (Restart under Difficulty)
     with st.sidebar:
         st.subheader("Game")
 
         mode_choice = st.radio(
             "Mode",
-            ["Daily", "Infinite"],
-            index=["Daily", "Infinite"].index(st.session_state.game_mode),
+            ["Daily", "Endless"],
+            index=["Daily", "Endless"].index(st.session_state.game_mode),
             disabled=not can_change_settings,
         )
         if mode_choice != st.session_state.game_mode and can_change_settings:
@@ -1118,10 +1319,15 @@ def main():
             disabled=not can_change_settings,
         )
 
+        if st.button("🔄 Restart", use_container_width=True):
+            start_new_game(elements, st.session_state.game_mode)
+            st.rerun()
+
         st.subheader("Hints")
         st.session_state.enable_special_clue = st.toggle(
-            "Enable special clue (Higher/Lower)",
+            "Special Clue: Atomic Number",
             value=bool(st.session_state.enable_special_clue),
+            help="Reveals whether the answer’s atomic number is higher or lower than your last valid guess (when needed).",
         )
 
         # Stats in production ✅
@@ -1159,10 +1365,7 @@ def main():
                     init_stats()
                     st.success("Stats reset")
 
-        if st.button("🔄 Restart"):
-            start_new_game(elements, st.session_state.game_mode)
-            st.rerun()
-
+    # Daily banner
     if st.session_state.game_mode == "Daily":
         today = dt.date.today()
         st.info(f"📅 Today’s date: {today:%A, %d %B %Y}")
@@ -1186,7 +1389,7 @@ def main():
     st.write(f"🎯 **Guesses used:** {st.session_state.attempt}/{st.session_state.max_guesses}")
 
     guesses_left = st.session_state.max_guesses - st.session_state.attempt
-    special_hi_lo = compute_hi_lo_special_clue(
+    special_atomic = compute_special_atomic_clue(
         enabled=bool(st.session_state.enable_special_clue),
         elements=elements,
         revealed=st.session_state.revealed,
@@ -1215,6 +1418,9 @@ def main():
         status=st.session_state.status,
     )
 
+    # IMPORTANT: key includes board_nonce to prevent "ghost last guess" after restart/mode switch
+    board_key = f"tiles_board_{st.session_state.board_nonce}"
+
     click = periodic_table(
         tiles=tiles,
         legend={
@@ -1227,7 +1433,7 @@ def main():
         },
         disabled=(st.session_state.status != "playing"),
         invalidAtomic=invalid_atomic_to_send,
-        key="tiles_board",
+        key=board_key,
     )
 
     # Clear one-shot triggers after render
@@ -1285,7 +1491,8 @@ def main():
                 st.session_state.win_anim_pending = True
                 st.rerun()
 
-            reveal_next_clue(secret, elements, st.session_state.revealed, st.session_state.attempt)
+            # Reveal next clue using entropy (skips useless clues)
+            reveal_next_clue(secret, elements, st.session_state.attempt)
 
             if st.session_state.attempt >= st.session_state.max_guesses:
                 st.session_state.status = "lost"
@@ -1293,14 +1500,14 @@ def main():
             st.rerun()
 
     # Revealed clues — numbered, chronological
-    if st.session_state.revealed or special_hi_lo:
+    if st.session_state.revealed or special_atomic:
         st.subheader("Revealed clues")
         i = 1
         for k in st.session_state.revealed_order:
             if k not in st.session_state.revealed:
                 continue
             v = st.session_state.revealed[k]
-            if k == "boil_split":
+            if k in ("boil_split", "melt_split"):
                 op, xs = v.split("|", 1)
                 sign = "≤" if op == "le" else ">"
                 st.write(f"{i}. **{CLUES[k]}:** {sign} {xs} K")
@@ -1308,8 +1515,8 @@ def main():
                 st.write(f"{i}. **{CLUES[k]}:** {v}")
             i += 1
 
-        if special_hi_lo:
-            st.write(f"{i}. **Special clue:** {special_hi_lo}")
+        if special_atomic:
+            st.write(f"{i}. **Special clue:** {special_atomic}")
 
     if st.session_state.guesses:
         st.subheader("Guesses")
