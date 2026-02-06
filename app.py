@@ -9,6 +9,8 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
+import urllib.parse
+
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -72,31 +74,91 @@ def _declare_local_storage_component():
 _LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
 
 
+def _html_storage_get(key: str) -> Optional[dict]:
+    # Use a unique marker in the URL query params to receive JS response
+    marker = f"ls_{key}"
+    q = st.query_params
+
+    # If JS already wrote it into query params, read it
+    if marker in q:
+        try:
+            raw = q.get(marker)
+            if raw is None:
+                return None
+            data = json.loads(urllib.parse.unquote(raw))
+            # Important: don't leave it in URL forever
+            # Remove only our marker key
+            try:
+                del st.query_params[marker]
+            except Exception:
+                pass
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    # Otherwise inject JS that reads localStorage and writes it into query params
+    js = f"""
+    <script>
+      (function() {{
+        try {{
+          const key = {json.dumps(key)};
+          const marker = {json.dumps(marker)};
+          const raw = window.localStorage.getItem(key);
+          const val = raw ? raw : "null";
+          const url = new URL(window.location.href);
+          url.searchParams.set(marker, encodeURIComponent(val));
+          window.history.replaceState(null, "", url.toString());
+          // Trigger Streamlit rerun by posting a message
+          window.parent.postMessage({{ type: "streamlit:rerun" }}, "*");
+        }} catch (e) {{}}
+      }})();
+    </script>
+    """
+    components.html(js, height=0)
+    return None
+
+
+def _html_storage_set(key: str, value: dict) -> None:
+    js = f"""
+    <script>
+      (function() {{
+        try {{
+          const key = {json.dumps(key)};
+          const value = {json.dumps(json.dumps(value))}; // stringify safely
+          window.localStorage.setItem(key, value);
+        }} catch (e) {{}}
+      }})();
+    </script>
+    """
+    components.html(js, height=0)
+
+
 def local_storage_get(key: str) -> Optional[dict]:
-    """
-    Returns dict from browser localStorage, if component exists.
-    Otherwise returns None (fallback).
-    """
-    if _LOCAL_STORAGE_COMPONENT is None:
-        return None
-    try:
-        return _LOCAL_STORAGE_COMPONENT(op="get", key=key, default=None)
-    except Exception:
-        return None
+    # 1) Try component
+    if _LOCAL_STORAGE_COMPONENT is not None:
+        try:
+            out = _LOCAL_STORAGE_COMPONENT(op="get", key=key, default=None)
+            if isinstance(out, dict):
+                return out
+        except Exception:
+            # component not working on Cloud → fallback below
+            pass
+
+    # 2) Fallback
+    return _html_storage_get(key)
 
 
 def local_storage_set(key: str, value: dict) -> None:
-    """
-    Writes dict to browser localStorage, if component exists.
-    Otherwise no-op (fallback).
-    """
-    if _LOCAL_STORAGE_COMPONENT is None:
-        return
-    try:
-        _LOCAL_STORAGE_COMPONENT(op="set", key=key, value=value, default=None)
-    except Exception:
-        pass
+    # 1) Try component
+    if _LOCAL_STORAGE_COMPONENT is not None:
+        try:
+            _LOCAL_STORAGE_COMPONENT(op="set", key=key, value=value, default=None)
+            return
+        except Exception:
+            pass
 
+    # 2) Fallback
+    _html_storage_set(key, value)
 
 # =========================================================
 # Data model
