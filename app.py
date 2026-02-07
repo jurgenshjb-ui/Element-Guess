@@ -1392,36 +1392,32 @@ def main():
 
     board_key = f"tiles_board_{st.session_state.board_nonce}"
     # Render periodic table component.
-    # Some builds of the component don't accept invalidAtomic; try it, then fallback.
-    try:
-        click = periodic_table(
-            tiles=tiles,
-            legend={
-                "none": "#E5E7EB",
-                "bad": "#EF4444",
-                "close": "#F59E0B",
-                "correct": "#16A34A",
-                "hint": "#3B82F6",
-                "lost": "#111827",
-            },
-            disabled=(st.session_state.status != "playing"),
-            invalidAtomic=st.session_state.invalid_atomic,
-            key=board_key,
-        )
-    except TypeError:
-        click = periodic_table(
-            tiles=tiles,
-            legend={
-                "none": "#E5E7EB",
-                "bad": "#EF4444",
-                "close": "#F59E0B",
-                "correct": "#16A34A",
-                "hint": "#3B82F6",
-                "lost": "#111827",
-            },
-            disabled=(st.session_state.status != "playing"),
-            key=board_key,
-        )
+    # Block colors are passed so the legend matches the block outlines on the board.
+    block_colors = {
+        "s": "#A78BFA",  # purple
+        "p": "#34D399",  # green
+        "d": "#FBBF24",  # amber
+        "f": "#60A5FA",  # blue
+    }
+    click = periodic_table(
+        tiles=tiles,
+        legend={
+            "none": "#E5E7EB",
+            "bad": "#EF4444",
+            "close": "#F59E0B",
+            "correct": "#16A34A",
+            "hint": "#3B82F6",
+            "lost": "#111827",
+            "s": block_colors["s"],
+            "p": block_colors["p"],
+            "d": block_colors["d"],
+            "f": block_colors["f"],
+        },
+        disabled=(st.session_state.status != "playing"),
+        invalidAtomic=st.session_state.invalid_atomic,
+        blockLegend=block_colors,
+        key=board_key,
+    )
 
     # Definitions moved under table
 

@@ -60,6 +60,7 @@ const PeriodicTable = (props: ComponentProps) => {
     f: "#A78BFA",
   };
   const disabled: boolean = !!props.args["disabled"];
+  const invalidAtomic: number | null = (props.args["invalidAtomic"] ?? null) as any;
 
   // Build main grid lookup for block-edge calculation
   const main = new Map<string, Tile>();
@@ -137,6 +138,8 @@ const PeriodicTable = (props: ComponentProps) => {
   const renderCell = (t?: Tile) => {
     if (!t) return <td style={{ width: cellW, height: cellH }} />;
 
+    const shake = invalidAtomic != null && t.atomic === invalidAtomic;
+
     const b = blockFor(t);
     const e = edgeMap.get(t.atomic);
     const cls =
@@ -150,7 +153,8 @@ const PeriodicTable = (props: ComponentProps) => {
       (e?.top ? " edge-top" : "") +
       (e?.right ? " edge-right" : "") +
       (e?.bottom ? " edge-bottom" : "") +
-      (e?.left ? " edge-left" : "");
+      (e?.left ? " edge-left" : "") +
+      (shake ? " shake" : "");
 
     return (
       <td style={{ width: cellW, height: cellH, textAlign: "center" }}>
