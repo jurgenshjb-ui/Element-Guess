@@ -33,20 +33,6 @@ function fgColor(status: Tile["status"]) {
   return status === "bad" || status === "correct" ? "white" : "#111827";
 }
 
-
-function blockClass(t: Tile): "s" | "p" | "d" | "f" | "u" {
-  // f-block: lanthanoids/actinoids strips
-  if (t.row === "lanth" || t.row === "actin") return "f";
-  // He is s-block despite being in group 18
-  if (t.atomic === 2) return "s";
-  const g = t.group ?? null;
-  if (g == null) return "u";
-  if (g <= 2) return "s";
-  if (g >= 3 && g <= 12) return "d";
-  if (g >= 13 && g <= 18) return "p";
-  return "u";
-}
-
 const PeriodicTable = (props: ComponentProps) => {
   const tiles: Tile[] = props.args["tiles"] ?? [];
   const legend: Legend = props.args["legend"] ?? {
@@ -101,12 +87,10 @@ const PeriodicTable = (props: ComponentProps) => {
     if (!t) return <td style={{ width: cellW, height: cellH }} />;
 
     const shake = invalidAtomic != null && t.atomic === invalidAtomic;
-    const blk = blockClass(t);
 
     const cls =
       "tile" +
       (t.status ? ` ${t.status}` : "") +
-      ` blk-${blk}` +
       ((disabled || t.locked) ? " disabled" : "") +
       (t.isNewHint ? " pulse" : "") +
       (t.isLastGuess ? " lastGuess" : "") +
@@ -167,22 +151,6 @@ const PeriodicTable = (props: ComponentProps) => {
         </span>
         <span className="chip">
           <span className="box" style={{ background: legend.lost }} /> revealed answer
-        </span>
-      </div>
-
-      {/* Blocks key */}
-      <div className="blocksLegend">
-        <span className="chip">
-          <span className="box blk-s" /> s-block
-        </span>
-        <span className="chip">
-          <span className="box blk-p" /> p-block
-        </span>
-        <span className="chip">
-          <span className="box blk-d" /> d-block
-        </span>
-        <span className="chip">
-          <span className="box blk-f" /> f-block
         </span>
       </div>
 

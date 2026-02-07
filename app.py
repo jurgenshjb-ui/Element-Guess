@@ -50,25 +50,57 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED
 
 
 # =========================================================
-# Stats persistence (localStorage DISABLED for now)
-# ---------------------------------------------------------
-# LocalStorage persistence via a custom Streamlit component was experimental and
-# is currently turned off. Stats are kept in Streamlit session_state only (they
-# will reset on browser refresh / new session).
-#
-# If you want to re-enable later, we can restore the component-based persistence.
 # =========================================================
-ENABLE_LOCAL_STORAGE = False
-_LOCAL_STORAGE_COMPONENT = None
-
-def local_storage_get(storage_key: str):
+# LocalStorage stats persistence (optional, but recommended)
+# ---------------------------------------------------------
+# If the in-repo component exists at: local_storage/frontend/dist
+# we use it to persist stats per browser/device across refreshes.
+# Otherwise we fall back to session_state-only stats.
+#
+# IMPORTANT:
+# Streamlit reserves the kwarg name `key` for the widget identity.
+# So we send the localStorage key under `storage_key`.
+# =========================================================
+def _declare_local_storage_component():
+    build_dir = os.path.join(os.path.dirname(__file__), "local_storage", "frontend", "dist")
+    if os.path.isdir(build_dir):
+        return components.declare_component("local_storage", path=build_dir)
     return None
 
+
+_LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
+
+
+def local_storage_get(storage_key: str) -> Optional[dict]:
+    """Read a dict from browser localStorage (or None if unavailable)."""
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return None
+    try:
+        out = _LOCAL_STORAGE_COMPONENT(
+            op="get",
+            storage_key=storage_key,          # forwarded to frontend
+            default=None,
+            key=f"ls_get_{storage_key}",      # Streamlit widget key (NOT forwarded)
+        )
+        return out if isinstance(out, dict) else None
+    except Exception:
+        return None
+
+
 def local_storage_set(storage_key: str, value: dict) -> None:
-    return
-
-
-# =========================================================
+    """Write a dict to browser localStorage (no-op if unavailable)."""
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return
+    try:
+        _LOCAL_STORAGE_COMPONENT(
+            op="set",
+            storage_key=storage_key,          # forwarded to frontend
+            value=value,
+            default=None,
+            key=f"ls_set_{storage_key}",      # Streamlit widget key (NOT forwarded)
+        )
+    except Exception:
+        pass
 # Data model
 # =========================================================
 @dataclass(frozen=True)
@@ -1140,10 +1172,27 @@ def _default_stats() -> dict:
 
 
 def load_stats() -> dict:
-    # Session-only stats (localStorage persistence disabled).
+    # We allow up to 2 hydration attempts because components return default on first run.
+    if "_stats_hydrate_attempts" not in st.session_state:
+        st.session_state._stats_hydrate_attempts = 0
+
     if "stats" not in st.session_state or not isinstance(st.session_state.stats, dict):
         st.session_state.stats = _default_stats()
+
+    # If we haven't successfully hydrated yet, keep trying (up to 2 attempts)
+    if not st.session_state.get("_stats_hydrated", False):
+        st.session_state._stats_hydrate_attempts += 1
+
+        persisted = local_storage_get(STATS_KEY)
+        if isinstance(persisted, dict) and persisted.get("games_played") is not None:
+            st.session_state.stats = persisted
+            st.session_state._stats_hydrated = True
+        elif st.session_state._stats_hydrate_attempts >= 2:
+            # After 2 tries, accept "no stored stats" and stop retrying
+            st.session_state._stats_hydrated = True
+
     return st.session_state.stats
+
 
 
 def save_stats(stats: dict) -> None:
@@ -1277,7 +1326,7 @@ def start_new_game(elements: List[Element], game_mode: str):
     st.session_state.revealed = {}
     st.session_state.revealed_order = []
     st.session_state.attempt = 0
-    st.session_state.max_guesses = 8
+    st.session_state.max_guesses = 7
     st.session_state.last_click_nonce = None
     st.session_state.last_valid_guess_atomic = None
     st.session_state.last_guess_atomic = None
@@ -1556,7 +1605,7 @@ def how_to_play():
     with st.expander("❓ How to play", expanded=False):
         st.markdown(
             """
-**Goal:** Guess the hidden element in **8 guesses or fewer**.
+**Goal:** Guess the hidden element in **7 guesses or fewer**.
 
 **Tile colors:**
 - 🟥 **Red** — fails revealed clues
@@ -1575,26 +1624,6 @@ def how_to_play():
 """
         )
 
-
-
-# =========================================================
-# Starter clue (informational only; does NOT filter candidates)
-# Shown only in Easy/Normal.
-# =========================================================
-def starter_clue_text(secret: Element) -> str:
-    if secret.discovered_by:
-        return f"Discovered by: {secret.discovered_by}"
-    if secret.named_by:
-        return f"Named by: {secret.named_by}"
-    if secret.source:
-        return f"Source: {secret.source}"
-    if secret.summary:
-        s = secret.summary.strip().split(".")[0].strip()
-        if s:
-            if len(s) > 160:
-                s = s[:160].rsplit(" ", 1)[0] + "…"
-            return s
-    return f"Symbol length: {len(secret.symbol)} letters"
 
 # =========================================================
 # Main
@@ -1621,6 +1650,7 @@ def main():
         today = dt.date.today()
         st.info(f"📅 Today: {today:%A, %d %B %Y} • Day {day_number()}")
 
+    definitions_panel()
 
     # Effective secret (debug override does not mutate real secret)
     debug_mode = False
@@ -1743,29 +1773,7 @@ def main():
         last_valid_guess_atomic=st.session_state.last_valid_guess_atomic,
     )
 
-    # Starter clue (informational only)
-    if st.session_state.difficulty in ("Easy", "Normal") and st.session_state.attempt == 0:
-        st.info("🟦 Starter info (doesn't filter guesses): " + starter_clue_text(secret))
-
-    # Revealed clues (shown ABOVE the periodic table for smoother gameplay)
-    if st.session_state.revealed or special_atomic:
-        st.subheader("Revealed clues")
-        i = 1
-        for k in st.session_state.revealed_order:
-            if k not in st.session_state.revealed:
-                continue
-            v = st.session_state.revealed[k]
-            if k in ("boil_split", "melt_split"):
-                op, xs = v.split("|", 1)
-                sign = "≤" if op == "le" else ">"
-                st.write(f"{i}. **{CLUES[k]}:** {sign} {xs} K")
-            else:
-                st.write(f"{i}. **{CLUES[k]}:** {v}")
-            i += 1
-
-        if special_atomic:
-            st.write(f"{i}. **Special clue:** {special_atomic}")
-# Debug analytics in main area (if enabled)
+    # Debug analytics in main area (if enabled)
     if st.session_state.debug_enabled:
         with st.expander("🛠 Debug analytics", expanded=False):
             show_debug_panel(secret, elements, st.session_state.revealed)
@@ -1821,9 +1829,6 @@ def main():
         )
 
     # Clear one-shot triggers after render
-
-#    definitions_panel()  # moved below periodic table
-
     if invalid_atomic_to_send is not None:
         st.session_state.invalid_atomic = None
     if last_guess_to_send is not None:
@@ -1887,8 +1892,24 @@ def main():
 
             st.rerun()
 
-    # Definitions (moved below the periodic table)
-    definitions_panel()
+    # Revealed clues — numbered, chronological
+    if st.session_state.revealed or special_atomic:
+        st.subheader("Revealed clues")
+        i = 1
+        for k in st.session_state.revealed_order:
+            if k not in st.session_state.revealed:
+                continue
+            v = st.session_state.revealed[k]
+            if k in ("boil_split", "melt_split"):
+                op, xs = v.split("|", 1)
+                sign = "≤" if op == "le" else ">"
+                st.write(f"{i}. **{CLUES[k]}:** {sign} {xs} K")
+            else:
+                st.write(f"{i}. **{CLUES[k]}:** {v}")
+            i += 1
+
+        if special_atomic:
+            st.write(f"{i}. **Special clue:** {special_atomic}")
 
     # Guesses list
     if st.session_state.guesses:

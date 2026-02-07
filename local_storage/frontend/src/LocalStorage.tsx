@@ -11,26 +11,20 @@ function safeParse(raw: string | null): any {
 }
 
 export default function LocalStorage(props: ComponentProps) {
-  const args = props.args ?? {};
+  const op: string = props.args["op"] ?? "get";
 
-  const op: string = (args["op"] ?? "get") as string;
-  const storageKey: string = (args["key"] ?? "") as string;
+  // IMPORTANT: this must match app.py (storage_key, not key)
+  const storageKey: string = props.args["storage_key"] ?? "";
 
-  const value: any = args["value"] ?? null;
+  const value: any = props.args["value"] ?? null;
+  const fallback: any = props.args["default"] ?? null;
 
-  // Support both names because your Python calls have varied:
-  const fallback: any =
-    args["default_value"] ?? args["default"] ?? props.defaultValue ?? null;
-
-  // Tell Streamlit the component is ready + keep it zero-height
+  // Minimal height — we don't render UI
   useEffect(() => {
-    Streamlit.setComponentReady();
     Streamlit.setFrameHeight(0);
   }, []);
 
   useEffect(() => {
-    Streamlit.setFrameHeight(0);
-
     if (!storageKey) {
       Streamlit.setComponentValue(fallback);
       return;
@@ -55,7 +49,7 @@ export default function LocalStorage(props: ComponentProps) {
 
     // Unknown op
     Streamlit.setComponentValue(fallback);
-  }, [op, storageKey, value, JSON.stringify(fallback)]);
+  }, [op, storageKey, value, fallback]);
 
   return null;
 }
