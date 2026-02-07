@@ -27,6 +27,37 @@
   border: 1px solid rgba(0,0,0,0.18);
 }
 
+/* ===== Block outlines (s/p/d/f) ===== */
+.tile.blk-s { box-shadow: 0 1px 0 rgba(0,0,0,0.04), 0 0 0 2px rgba(59,130,246,0.55) inset; }
+.tile.blk-p { box-shadow: 0 1px 0 rgba(0,0,0,0.04), 0 0 0 2px rgba(34,197,94,0.55) inset; }
+.tile.blk-d { box-shadow: 0 1px 0 rgba(0,0,0,0.04), 0 0 0 2px rgba(245,158,11,0.60) inset; }
+.tile.blk-f { box-shadow: 0 1px 0 rgba(0,0,0,0.04), 0 0 0 2px rgba(168,85,247,0.55) inset; }
+
+/* Keep disabled tiles readable */
+.tile.disabled.blk-s,
+.tile.disabled.blk-p,
+.tile.disabled.blk-d,
+.tile.disabled.blk-f {
+  filter: grayscale(0.2);
+}
+
+/* Block legend row */
+.legendBlocks { margin-top: 6px; }
+
+.boxOutline {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: transparent;
+  border: 2px solid rgba(0,0,0,0.3);
+  box-sizing: border-box;
+}
+
+.boxOutline.blk-s { border-color: rgba(59,130,246,0.85); }
+.boxOutline.blk-p { border-color: rgba(34,197,94,0.85); }
+.boxOutline.blk-d { border-color: rgba(245,158,11,0.90); }
+.boxOutline.blk-f { border-color: rgba(168,85,247,0.85); }
+
 .table {
   border-collapse: separate;
   border-spacing: 2px 6px;
