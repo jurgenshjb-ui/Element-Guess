@@ -41,29 +41,30 @@ IS_PRODUCTION = (
     or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
 )
 DEBUG_ALLOWED = str(st.secrets.get("DEBUG", "false")).lower() == "true"
-SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and not IS_PRODUCTION)
+SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED
 
 # If you want debug hidden in prod but available locally:
 # - set STREAMLIT_ENV="prod" in Secrets to hide debug on Cloud
 # - keep DEBUG="false" (or omit) on Cloud
 
 
+
 # =========================================================
 # LocalStorage stats component (optional)
 # ---------------------------------------------------------
-# This app will TRY to use a local component if you create it.
-# If the component isn't present, it falls back to session-only stats.
+# Uses a local Streamlit component at:
+#   local_storage/frontend/dist
 #
-# To enable per-device stats persistence:
-# - Create folder: local_storage/frontend/dist
-# - Build a simple Streamlit component that reads/writes localStorage
-#
-# You can also keep using session stats; the app will still run.
+# IMPORTANT:
+# - Streamlit component widget identity uses parameter name: key=
+# - Your localStorage key should NOT also be named "key" or it collides.
+#   We use "storage_key" instead.
 # =========================================================
+
 def _declare_local_storage_component():
     """
-    Optional component. If you create a local_storage component package in-repo,
-    this will pick it up. If not present, returns None and we fallback.
+    Declares the optional local_storage component if its build assets exist.
+    Returns a callable component function, or None.
     """
     build_dir = os.path.join(os.path.dirname(__file__), "local_storage", "frontend", "dist")
     if os.path.isdir(build_dir):
@@ -74,91 +75,44 @@ def _declare_local_storage_component():
 _LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
 
 
-def _html_storage_get(key: str) -> Optional[dict]:
-    # Use a unique marker in the URL query params to receive JS response
-    marker = f"ls_{key}"
-    q = st.query_params
-
-    # If JS already wrote it into query params, read it
-    if marker in q:
-        try:
-            raw = q.get(marker)
-            if raw is None:
-                return None
-            data = json.loads(urllib.parse.unquote(raw))
-            # Important: don't leave it in URL forever
-            # Remove only our marker key
-            try:
-                del st.query_params[marker]
-            except Exception:
-                pass
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
-
-    # Otherwise inject JS that reads localStorage and writes it into query params
-    js = f"""
-    <script>
-      (function() {{
-        try {{
-          const key = {json.dumps(key)};
-          const marker = {json.dumps(marker)};
-          const raw = window.localStorage.getItem(key);
-          const val = raw ? raw : "null";
-          const url = new URL(window.location.href);
-          url.searchParams.set(marker, encodeURIComponent(val));
-          window.history.replaceState(null, "", url.toString());
-          // Trigger Streamlit rerun by posting a message
-          window.parent.postMessage({{ type: "streamlit:rerun" }}, "*");
-        }} catch (e) {{}}
-      }})();
-    </script>
+def local_storage_get(storage_key: str) -> Optional[dict]:
     """
-    components.html(js, height=0)
-    return None
-
-
-def _html_storage_set(key: str, value: dict) -> None:
-    js = f"""
-    <script>
-      (function() {{
-        try {{
-          const key = {json.dumps(key)};
-          const value = {json.dumps(json.dumps(value))}; // stringify safely
-          window.localStorage.setItem(key, value);
-        }} catch (e) {{}}
-      }})();
-    </script>
+    Returns a dict from browser localStorage for storage_key, or None.
     """
-    components.html(js, height=0)
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return None
+
+    try:
+        # key= is Streamlit's widget key (must be unique per call)
+        out = _LOCAL_STORAGE_COMPONENT(
+            op="get",
+            storage_key=storage_key,          # <-- our custom arg for JS side
+            default=None,
+            key=f"ls_get_{storage_key}",      # <-- Streamlit widget key
+        )
+        return out if isinstance(out, dict) else None
+    except Exception:
+        return None
 
 
-def local_storage_get(key: str) -> Optional[dict]:
-    # 1) Try component
-    if _LOCAL_STORAGE_COMPONENT is not None:
-        try:
-            out = _LOCAL_STORAGE_COMPONENT(op="get", key=key, default=None)
-            if isinstance(out, dict):
-                return out
-        except Exception:
-            # component not working on Cloud → fallback below
-            pass
+def local_storage_set(storage_key: str, value: dict) -> None:
+    """
+    Writes dict to browser localStorage for storage_key.
+    """
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return
 
-    # 2) Fallback
-    return _html_storage_get(key)
+    try:
+        _LOCAL_STORAGE_COMPONENT(
+            op="set",
+            storage_key=storage_key,          # <-- our custom arg for JS side
+            value=value,
+            default=None,
+            key=f"ls_set_{storage_key}",      # <-- Streamlit widget key
+        )
+    except Exception:
+        pass
 
-
-def local_storage_set(key: str, value: dict) -> None:
-    # 1) Try component
-    if _LOCAL_STORAGE_COMPONENT is not None:
-        try:
-            _LOCAL_STORAGE_COMPONENT(op="set", key=key, value=value, default=None)
-            return
-        except Exception:
-            pass
-
-    # 2) Fallback
-    _html_storage_set(key, value)
 
 # =========================================================
 # Data model
@@ -1232,15 +1186,27 @@ def _default_stats() -> dict:
 
 
 def load_stats() -> dict:
-    if "stats" in st.session_state and isinstance(st.session_state.stats, dict):
-        return st.session_state.stats
+    # We allow up to 2 hydration attempts because components return default on first run.
+    if "_stats_hydrate_attempts" not in st.session_state:
+        st.session_state._stats_hydrate_attempts = 0
 
-    persisted = local_storage_get(STATS_KEY)
-    if isinstance(persisted, dict) and persisted.get("games_played") is not None:
-        st.session_state.stats = persisted
-    else:
+    if "stats" not in st.session_state or not isinstance(st.session_state.stats, dict):
         st.session_state.stats = _default_stats()
+
+    # If we haven't successfully hydrated yet, keep trying (up to 2 attempts)
+    if not st.session_state.get("_stats_hydrated", False):
+        st.session_state._stats_hydrate_attempts += 1
+
+        persisted = local_storage_get(STATS_KEY)
+        if isinstance(persisted, dict) and persisted.get("games_played") is not None:
+            st.session_state.stats = persisted
+            st.session_state._stats_hydrated = True
+        elif st.session_state._stats_hydrate_attempts >= 2:
+            # After 2 tries, accept "no stored stats" and stop retrying
+            st.session_state._stats_hydrated = True
+
     return st.session_state.stats
+
 
 
 def save_stats(stats: dict) -> None:
