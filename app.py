@@ -50,22 +50,17 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED
 
 
 # =========================================================
-# LocalStorage stats component (optional)
+# LocalStorage stats persistence (optional, but recommended)
 # ---------------------------------------------------------
-# Uses a local Streamlit component at:
-#   local_storage/frontend/dist
+# If the in-repo component exists at: local_storage/frontend/dist
+# we use it to persist stats per browser/device across refreshes.
+# Otherwise we fall back to session_state-only stats.
 #
 # IMPORTANT:
-# - Streamlit component widget identity uses parameter name: key=
-# - Your localStorage key should NOT also be named "key" or it collides.
-#   We use "storage_key" instead.
+# Streamlit reserves the kwarg name `key` for the widget identity.
+# So we send the localStorage key under `storage_key`.
 # =========================================================
-
 def _declare_local_storage_component():
-    """
-    Declares the optional local_storage component if its build assets exist.
-    Returns a callable component function, or None.
-    """
     build_dir = os.path.join(os.path.dirname(__file__), "local_storage", "frontend", "dist")
     if os.path.isdir(build_dir):
         return components.declare_component("local_storage", path=build_dir)
@@ -76,19 +71,15 @@ _LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
 
 
 def local_storage_get(storage_key: str) -> Optional[dict]:
-    """
-    Returns a dict from browser localStorage for storage_key, or None.
-    """
+    """Read a dict from browser localStorage (or None if unavailable)."""
     if _LOCAL_STORAGE_COMPONENT is None:
         return None
-
     try:
-        # key= is Streamlit's widget key (must be unique per call)
         out = _LOCAL_STORAGE_COMPONENT(
             op="get",
-            storage_key=storage_key,          # <-- our custom arg for JS side
+            storage_key=storage_key,          # forwarded to frontend
             default=None,
-            key=f"ls_get_{storage_key}",      # <-- Streamlit widget key
+            key=f"ls_get_{storage_key}",      # Streamlit widget key (NOT forwarded)
         )
         return out if isinstance(out, dict) else None
     except Exception:
@@ -96,19 +87,16 @@ def local_storage_get(storage_key: str) -> Optional[dict]:
 
 
 def local_storage_set(storage_key: str, value: dict) -> None:
-    """
-    Writes dict to browser localStorage for storage_key.
-    """
+    """Write a dict to browser localStorage (no-op if unavailable)."""
     if _LOCAL_STORAGE_COMPONENT is None:
         return
-
     try:
         _LOCAL_STORAGE_COMPONENT(
             op="set",
-            storage_key=storage_key,          # <-- our custom arg for JS side
+            storage_key=storage_key,          # forwarded to frontend
             value=value,
             default=None,
-            key=f"ls_set_{storage_key}",      # <-- Streamlit widget key
+            key=f"ls_set_{storage_key}",      # Streamlit widget key (NOT forwarded)
         )
     except Exception:
         pass
