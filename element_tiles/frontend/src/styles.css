@@ -9,6 +9,15 @@
 .legend .box { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.18); }
 .legend .box.outline { background: transparent !important; border-width: 2px; }
 
+/* Block key swatches (s/p/d/f). TSX uses `.boxBlock` for these. */
+.legend .boxBlock {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.18);
+  display: inline-block;
+}
+
 .blockLegend { margin-top: -2px; }
 
 .table { border-collapse: separate; border-spacing: 2px 6px; font-size: 14px; }

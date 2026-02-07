@@ -33,7 +33,11 @@ IS_PRODUCTION = (
     or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
 )
 DEBUG_ALLOWED = str(st.secrets.get("DEBUG", "false")).lower() == "true"
-SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED
+
+# Debug is always available when running locally/dev.
+# On Streamlit Cloud, keep it hidden by default (STREAMLIT_ENV="prod").
+# To enable debug on Cloud temporarily, set DEBUG="true" in Secrets.
+SHOW_DEBUG_UI = (not IS_PRODUCTION) or DEBUG_ALLOWED
 
 # =========================================================
 # Data model
