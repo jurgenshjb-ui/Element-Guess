@@ -140,28 +140,23 @@ def _html_storage_set(key: str, value: dict) -> None:
 
 
 def local_storage_get(key: str) -> Optional[dict]:
-    # 1) Try component
-    if _LOCAL_STORAGE_COMPONENT is not None:
-        try:
-            out = _LOCAL_STORAGE_COMPONENT(op="get", key=key, default=None)
-            if isinstance(out, dict):
-                return out
-        except Exception:
-            # component not working on Cloud → fallback below
-            pass
-
-    # 2) Fallback
-    return _html_storage_get(key)
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return None
+    try:
+        out = _LOCAL_STORAGE_COMPONENT(op="get", key=key, default=None, key=f"ls_get_{key}")
+        return out if isinstance(out, dict) else None
+    except Exception:
+        return None
 
 
 def local_storage_set(key: str, value: dict) -> None:
-    # 1) Try component
-    if _LOCAL_STORAGE_COMPONENT is not None:
-        try:
-            _LOCAL_STORAGE_COMPONENT(op="set", key=key, value=value, default=None)
-            return
-        except Exception:
-            pass
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return
+    try:
+        _LOCAL_STORAGE_COMPONENT(op="set", key=key, value=value, default=None, key=f"ls_set_{key}")
+    except Exception:
+        pass
+
 
     # 2) Fallback
     _html_storage_set(key, value)
