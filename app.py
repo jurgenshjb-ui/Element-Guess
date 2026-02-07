@@ -47,6 +47,12 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and 
 # - set STREAMLIT_ENV="prod" in Secrets to hide debug on Cloud
 # - keep DEBUG="false" (or omit) on Cloud
 
+def ensure_local_storage_mount():
+    if _LOCAL_STORAGE_COMPONENT is not None:
+        _LOCAL_STORAGE_COMPONENT(op="noop", key="__mount__")
+ensure_local_storage_mount()
+
+
 
 # =========================================================
 # LocalStorage stats component (optional)
@@ -61,14 +67,19 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and 
 # You can also keep using session stats; the app will still run.
 # =========================================================
 def _declare_local_storage_component():
-    """
-    Optional component. If you create a local_storage component package in-repo,
-    this will pick it up. If not present, returns None and we fallback.
-    """
-    build_dir = os.path.join(os.path.dirname(__file__), "local_storage", "frontend", "dist")
-    if os.path.isdir(build_dir):
-        return components.declare_component("local_storage", path=build_dir)
-    return None
+    build_dir = os.path.join(
+        os.path.dirname(__file__),
+        "local_storage",
+        "frontend",
+        "dist"
+    )
+
+    if not os.path.exists(build_dir):
+        st.warning("⚠️ local_storage component not found — stats will be session-only")
+        return None
+
+    return components.declare_component("local_storage", path=build_dir)
+
 
 
 _LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
