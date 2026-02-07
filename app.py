@@ -41,7 +41,7 @@ IS_PRODUCTION = (
     or st.secrets.get("STREAMLIT_ENV", "dev") == "prod"
 )
 DEBUG_ALLOWED = str(st.secrets.get("DEBUG", "false")).lower() == "true"
-SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and not IS_PRODUCTION)
+SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED
 
 # If you want debug hidden in prod but available locally:
 # - set STREAMLIT_ENV="prod" in Secrets to hide debug on Cloud
