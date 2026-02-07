@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import { Streamlit, ComponentProps } from "streamlit-component-lib";
 
 type Tile = {
@@ -12,8 +12,6 @@ type Tile = {
   status: "none" | "bad" | "close" | "correct" | "hint" | "lost";
   tooltip: string;
   locked?: boolean;
-
-  // Animation flags (from app.py)
   isLastGuess?: boolean;
   isNewHint?: boolean;
   isWin?: boolean;
@@ -26,22 +24,22 @@ type Legend = {
   correct: string;
   hint: string;
   lost: string;
+  s: string;
+  p: string;
+  d: string;
+  f: string;
 };
 
 function fgColor(status: Tile["status"]) {
-  if (status === "lost") return "#FDE68A"; // soft amber/yellow
+  if (status === "lost") return "#FDE68A";
   return status === "bad" || status === "correct" ? "white" : "#111827";
 }
 
-
-function blockClass(t: Tile): "s" | "p" | "d" | "f" | "u" {
-  // f-block: lanthanoids/actinoids strips
+function blockFor(t: Tile): "s" | "p" | "d" | "f" | "u" {
   if (t.row === "lanth" || t.row === "actin") return "f";
-  // He is s-block despite being in group 18
-  if (t.atomic === 2) return "s";
   const g = t.group ?? null;
-  if (g == null) return "u";
-  if (g <= 2) return "s";
+  if (g === null) return "u";
+  if (g === 1 || g === 2 || t.symbol === "H" || t.symbol === "He") return "s";
   if (g >= 3 && g <= 12) return "d";
   if (g >= 13 && g <= 18) return "p";
   return "u";
@@ -56,11 +54,14 @@ const PeriodicTable = (props: ComponentProps) => {
     correct: "#16A34A",
     hint: "#3B82F6",
     lost: "#111827",
+    s: "#60A5FA",
+    p: "#FBBF24",
+    d: "#34D399",
+    f: "#A78BFA",
   };
   const disabled: boolean = !!props.args["disabled"];
-  const invalidAtomic: number | null = props.args["invalidAtomic"] ?? null;
 
-  // --- Build lookup tables
+  // Build main grid lookup for block-edge calculation
   const main = new Map<string, Tile>();
   const lanth: Tile[] = [];
   const actin: Tile[] = [];
@@ -78,18 +79,54 @@ const PeriodicTable = (props: ComponentProps) => {
   lanth.sort((a, b) => (a.pos ?? 0) - (b.pos ?? 0));
   actin.sort((a, b) => (a.pos ?? 0) - (b.pos ?? 0));
 
-  // --- Click handler
+  const edgeMap = useMemo(() => {
+    const edges = new Map<number, {top:boolean;right:boolean;bottom:boolean;left:boolean}>();
+    const get = (p:number,g:number) => main.get(`${p}-${g}`);
+    for (let p=1; p<=7; p++){
+      for (let g=1; g<=18; g++){
+        const t = get(p,g);
+        if (!t) continue;
+        const b = blockFor(t);
+        if (b==="u") continue;
+        const nTop = get(p-1,g);
+        const nBot = get(p+1,g);
+        const nLeft = get(p,g-1);
+        const nRight = get(p,g+1);
+        edges.set(t.atomic,{
+          top: !(nTop && blockFor(nTop)===b),
+          bottom: !(nBot && blockFor(nBot)===b),
+          left: !(nLeft && blockFor(nLeft)===b),
+          right: !(nRight && blockFor(nRight)===b),
+        });
+      }
+    }
+    // strips: treat contiguous within strip
+    const stripEdges = (strip:Tile[])=>{
+      for (let i=0;i<strip.length;i++){
+        const t=strip[i];
+        const b=blockFor(t);
+        if (b!=="f") continue;
+        const l = strip[i-1];
+        const r = strip[i+1];
+        edges.set(t.atomic,{
+          top:true,
+          bottom:true,
+          left: !(l && blockFor(l)===b),
+          right: !(r && blockFor(r)===b),
+        });
+      }
+    };
+    stripEdges(lanth);
+    stripEdges(actin);
+    return edges;
+  }, [tiles]);
+
   const sendClick = (t: Tile) => {
     if (disabled) return;
     if (t.locked) return;
-
-    Streamlit.setComponentValue({
-      atomic: t.atomic,
-      nonce: Math.floor(Math.random() * 1e9),
-    });
+    Streamlit.setComponentValue({ atomic: t.atomic, nonce: Math.floor(Math.random() * 1e9) });
   };
 
-  // Let Streamlit resize iframe if needed
   useEffect(() => {
     Streamlit.setFrameHeight();
   });
@@ -100,31 +137,29 @@ const PeriodicTable = (props: ComponentProps) => {
   const renderCell = (t?: Tile) => {
     if (!t) return <td style={{ width: cellW, height: cellH }} />;
 
-    const shake = invalidAtomic != null && t.atomic === invalidAtomic;
-    const blk = blockClass(t);
-
+    const b = blockFor(t);
+    const e = edgeMap.get(t.atomic);
     const cls =
       "tile" +
       (t.status ? ` ${t.status}` : "") +
-      ` blk-${blk}` +
       ((disabled || t.locked) ? " disabled" : "") +
       (t.isNewHint ? " pulse" : "") +
       (t.isLastGuess ? " lastGuess" : "") +
       (t.isWin ? " win" : "") +
-      (shake ? " shake" : "");
+      (b !== "u" ? ` block-${b}` : "") +
+      (e?.top ? " edge-top" : "") +
+      (e?.right ? " edge-right" : "") +
+      (e?.bottom ? " edge-bottom" : "") +
+      (e?.left ? " edge-left" : "");
 
     return (
       <td style={{ width: cellW, height: cellH, textAlign: "center" }}>
         <div
           className={cls}
-          style={{
-            background: legend[t.status],
-            color: fgColor(t.status),
-          }}
+          style={{ background: legend[t.status], color: fgColor(t.status) }}
           title={t.tooltip}
           onClick={() => sendClick(t)}
         >
-          {/* Atomic number + symbol (stacked) */}
           <div className="anum">{t.atomic}</div>
           <div className="sym">{t.symbol}</div>
         </div>
@@ -137,7 +172,6 @@ const PeriodicTable = (props: ComponentProps) => {
       <tbody>
         <tr>
           <th className="stripLabel">{label}</th>
-          {/* spacer for group 1 & 2 alignment */}
           <td style={{ width: cellW, height: cellH }} />
           <td style={{ width: cellW, height: cellH }} />
           {strip.slice(0, 15).map((t) => renderCell(t))}
@@ -148,53 +182,28 @@ const PeriodicTable = (props: ComponentProps) => {
 
   return (
     <div className="wrap">
-      {/* Legend */}
       <div className="legend">
-        <span className="chip">
-          <span className="box" style={{ background: legend.none }} /> untried
-        </span>
-        <span className="chip">
-          <span className="box" style={{ background: legend.bad }} /> fails clues
-        </span>
-        <span className="chip">
-          <span className="box" style={{ background: legend.close }} /> matches clues
-        </span>
-        <span className="chip">
-          <span className="box" style={{ background: legend.correct }} /> correct
-        </span>
-        <span className="chip">
-          <span className="box" style={{ background: legend.hint }} /> easy candidates
-        </span>
-        <span className="chip">
-          <span className="box" style={{ background: legend.lost }} /> revealed answer
-        </span>
+        <span className="chip"><span className="box" style={{ background: legend.none }} /> untried</span>
+        <span className="chip"><span className="box" style={{ background: legend.bad }} /> fails clues</span>
+        <span className="chip"><span className="box" style={{ background: legend.close }} /> matches clues</span>
+        <span className="chip"><span className="box" style={{ background: legend.correct }} /> correct</span>
+        <span className="chip"><span className="box" style={{ background: legend.hint }} /> easy candidates</span>
+        <span className="chip"><span className="box" style={{ background: legend.lost }} /> revealed answer</span>
       </div>
 
-      {/* Blocks key */}
-      <div className="blocksLegend">
-        <span className="chip">
-          <span className="box blk-s" /> s-block
-        </span>
-        <span className="chip">
-          <span className="box blk-p" /> p-block
-        </span>
-        <span className="chip">
-          <span className="box blk-d" /> d-block
-        </span>
-        <span className="chip">
-          <span className="box blk-f" /> f-block
-        </span>
+      <div className="legend blockLegend">
+        <span className="chip"><span className="box outline" style={{ borderColor: legend.s }} /> s‑block</span>
+        <span className="chip"><span className="box outline" style={{ borderColor: legend.p }} /> p‑block</span>
+        <span className="chip"><span className="box outline" style={{ borderColor: legend.d }} /> d‑block</span>
+        <span className="chip"><span className="box outline" style={{ borderColor: legend.f }} /> f‑block</span>
       </div>
 
-      {/* Main periodic table */}
       <table className="table">
         <thead>
           <tr>
             <th className="th-left"></th>
             {Array.from({ length: 18 }, (_, i) => (
-              <th key={i} className="th">
-                {i + 1}
-              </th>
+              <th key={i} className="th">{i + 1}</th>
             ))}
           </tr>
         </thead>
