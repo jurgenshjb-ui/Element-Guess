@@ -12,26 +12,23 @@ function safeParse(raw: string | null): any {
 
 export default function LocalStorage(props: ComponentProps) {
   const op: string = props.args["op"] ?? "get";
-
-  // IMPORTANT: this must match app.py (storage_key, not key)
-  const storageKey: string = props.args["storage_key"] ?? "";
-
+  const storage_key: string = props.args["storage_key"] ?? ""; // IMPORTANT: not "key"
   const value: any = props.args["value"] ?? null;
   const fallback: any = props.args["default"] ?? null;
 
-  // Minimal height — we don't render UI
+  // Keep the iframe tiny (no UI)
   useEffect(() => {
     Streamlit.setFrameHeight(0);
   }, []);
 
   useEffect(() => {
-    if (!storageKey) {
+    if (!storage_key) {
       Streamlit.setComponentValue(fallback);
       return;
     }
 
     if (op === "get") {
-      const raw = window.localStorage.getItem(storageKey);
+      const raw = window.localStorage.getItem(storage_key);
       const parsed = safeParse(raw);
       Streamlit.setComponentValue(parsed ?? fallback);
       return;
@@ -39,7 +36,7 @@ export default function LocalStorage(props: ComponentProps) {
 
     if (op === "set") {
       try {
-        window.localStorage.setItem(storageKey, JSON.stringify(value));
+        window.localStorage.setItem(storage_key, JSON.stringify(value));
         Streamlit.setComponentValue({ ok: true });
       } catch (e: any) {
         Streamlit.setComponentValue({ ok: false, error: String(e) });
@@ -49,7 +46,7 @@ export default function LocalStorage(props: ComponentProps) {
 
     // Unknown op
     Streamlit.setComponentValue(fallback);
-  }, [op, storageKey, value, fallback]);
+  }, [op, storage_key, value, fallback]);
 
   return null;
 }
