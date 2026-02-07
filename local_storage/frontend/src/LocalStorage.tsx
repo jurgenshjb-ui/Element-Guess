@@ -11,24 +11,33 @@ function safeParse(raw: string | null): any {
 }
 
 export default function LocalStorage(props: ComponentProps) {
-  const op: string = props.args["op"] ?? "get";
-  const storage_key: string = props.args["storage_key"] ?? ""; // IMPORTANT: not "key"
-  const value: any = props.args["value"] ?? null;
-  const fallback: any = props.args["default"] ?? null;
+  const args = props.args ?? {};
 
-  // Keep the iframe tiny (no UI)
+  const op: string = (args["op"] ?? "get") as string;
+  const storageKey: string = (args["key"] ?? "") as string;
+
+  const value: any = args["value"] ?? null;
+
+  // Support both names because your Python calls have varied:
+  const fallback: any =
+    args["default_value"] ?? args["default"] ?? props.defaultValue ?? null;
+
+  // Tell Streamlit the component is ready + keep it zero-height
   useEffect(() => {
+    Streamlit.setComponentReady();
     Streamlit.setFrameHeight(0);
   }, []);
 
   useEffect(() => {
-    if (!storage_key) {
+    Streamlit.setFrameHeight(0);
+
+    if (!storageKey) {
       Streamlit.setComponentValue(fallback);
       return;
     }
 
     if (op === "get") {
-      const raw = window.localStorage.getItem(storage_key);
+      const raw = window.localStorage.getItem(storageKey);
       const parsed = safeParse(raw);
       Streamlit.setComponentValue(parsed ?? fallback);
       return;
@@ -36,7 +45,7 @@ export default function LocalStorage(props: ComponentProps) {
 
     if (op === "set") {
       try {
-        window.localStorage.setItem(storage_key, JSON.stringify(value));
+        window.localStorage.setItem(storageKey, JSON.stringify(value));
         Streamlit.setComponentValue({ ok: true });
       } catch (e: any) {
         Streamlit.setComponentValue({ ok: false, error: String(e) });
@@ -46,7 +55,7 @@ export default function LocalStorage(props: ComponentProps) {
 
     // Unknown op
     Streamlit.setComponentValue(fallback);
-  }, [op, storage_key, value, fallback]);
+  }, [op, storageKey, value, JSON.stringify(fallback)]);
 
   return null;
 }
