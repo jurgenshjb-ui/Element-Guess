@@ -1391,23 +1391,40 @@ def main():
     )
 
     board_key = f"tiles_board_{st.session_state.board_nonce}"
-
-    click = periodic_table(
-        tiles=tiles,
-        legend={
-            "none": "#E5E7EB",
-            "bad": "#EF4444",
-            "close": "#F59E0B",
-            "correct": "#16A34A",
-            "hint": "#3B82F6",
-            "lost": "#111827",
-        },
-        disabled=(st.session_state.status != "playing"),
-        invalidAtomic=st.session_state.invalid_atomic,
-        key=board_key,
-    )
+    # Render periodic table component.
+    # Some builds of the component don't accept invalidAtomic; try it, then fallback.
+    try:
+        click = periodic_table(
+            tiles=tiles,
+            legend={
+                "none": "#E5E7EB",
+                "bad": "#EF4444",
+                "close": "#F59E0B",
+                "correct": "#16A34A",
+                "hint": "#3B82F6",
+                "lost": "#111827",
+            },
+            disabled=(st.session_state.status != "playing"),
+            invalidAtomic=st.session_state.invalid_atomic,
+            key=board_key,
+        )
+    except TypeError:
+        click = periodic_table(
+            tiles=tiles,
+            legend={
+                "none": "#E5E7EB",
+                "bad": "#EF4444",
+                "close": "#F59E0B",
+                "correct": "#16A34A",
+                "hint": "#3B82F6",
+                "lost": "#111827",
+            },
+            disabled=(st.session_state.status != "playing"),
+            key=board_key,
+        )
 
     # Definitions moved under table
+
     definitions_panel()
 
     # Clear one-shot triggers
