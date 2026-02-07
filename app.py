@@ -61,21 +61,34 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and 
 #
 # You can also keep using session stats; the app will still run.
 # =========================================================
-def _declare_local_storage_component():
-    build_dir = os.path.join(
-        os.path.dirname(__file__),
-        "local_storage",
-        "frontend",
-        "dist"
-    )
-
-    if not os.path.exists(build_dir):
-        st.warning("⚠️ local_storage component not found — stats will be session-only")
+def local_storage_get(storage_key: str) -> Optional[dict]:
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return None
+    try:
+        out = _LOCAL_STORAGE_COMPONENT(
+            op="get",
+            key=storage_key,                 # <-- this is the localStorage key sent to JS
+            default=None,
+            _key=f"ls_get_{storage_key}",     # <-- Streamlit widget key
+        )
+        return out if isinstance(out, dict) else None
+    except Exception:
         return None
 
-    return components.declare_component("local_storage", path=build_dir)
 
-
+def local_storage_set(storage_key: str, value: dict) -> None:
+    if _LOCAL_STORAGE_COMPONENT is None:
+        return
+    try:
+        _LOCAL_STORAGE_COMPONENT(
+            op="set",
+            key=storage_key,                 # <-- localStorage key
+            value=value,
+            default=None,
+            _key=f"ls_set_{storage_key}",     # <-- Streamlit widget key
+        )
+    except Exception:
+        pass
 
 _LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
 
@@ -137,26 +150,6 @@ def _html_storage_set(key: str, value: dict) -> None:
     </script>
     """
     components.html(js, height=0)
-
-
-def local_storage_get(key: str) -> Optional[dict]:
-    if _LOCAL_STORAGE_COMPONENT is None:
-        return None
-    try:
-        out = _LOCAL_STORAGE_COMPONENT(op="get", key=key, default=None, key=f"ls_get_{key}")
-        return out if isinstance(out, dict) else None
-    except Exception:
-        return None
-
-
-def local_storage_set(key: str, value: dict) -> None:
-    if _LOCAL_STORAGE_COMPONENT is None:
-        return
-    try:
-        _LOCAL_STORAGE_COMPONENT(op="set", key=key, value=value, default=None, key=f"ls_set_{key}")
-    except Exception:
-        pass
-
 
     # 2) Fallback
     _html_storage_set(key, value)
