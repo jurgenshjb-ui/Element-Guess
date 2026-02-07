@@ -52,24 +52,43 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and 
 # =========================================================
 # LocalStorage stats component (optional)
 # ---------------------------------------------------------
-# This app will TRY to use a local component if you create it.
-# If the component isn't present, it falls back to session-only stats.
+# Uses a local Streamlit component at:
+#   local_storage/frontend/dist
 #
-# To enable per-device stats persistence:
-# - Create folder: local_storage/frontend/dist
-# - Build a simple Streamlit component that reads/writes localStorage
-#
-# You can also keep using session stats; the app will still run.
+# IMPORTANT:
+# - Streamlit component widget identity uses parameter name: key=
+# - Your localStorage key should NOT also be named "key" or it collides.
+#   We use "storage_key" instead.
 # =========================================================
+
+def _declare_local_storage_component():
+    """
+    Declares the optional local_storage component if its build assets exist.
+    Returns a callable component function, or None.
+    """
+    build_dir = os.path.join(os.path.dirname(__file__), "local_storage", "frontend", "dist")
+    if os.path.isdir(build_dir):
+        return components.declare_component("local_storage", path=build_dir)
+    return None
+
+
+_LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
+
+
 def local_storage_get(storage_key: str) -> Optional[dict]:
+    """
+    Returns a dict from browser localStorage for storage_key, or None.
+    """
     if _LOCAL_STORAGE_COMPONENT is None:
         return None
+
     try:
+        # key= is Streamlit's widget key (must be unique per call)
         out = _LOCAL_STORAGE_COMPONENT(
             op="get",
-            key=storage_key,                 # <-- this is the localStorage key sent to JS
+            storage_key=storage_key,          # <-- our custom arg for JS side
             default=None,
-            _key=f"ls_get_{storage_key}",     # <-- Streamlit widget key
+            key=f"ls_get_{storage_key}",      # <-- Streamlit widget key
         )
         return out if isinstance(out, dict) else None
     except Exception:
@@ -77,82 +96,23 @@ def local_storage_get(storage_key: str) -> Optional[dict]:
 
 
 def local_storage_set(storage_key: str, value: dict) -> None:
+    """
+    Writes dict to browser localStorage for storage_key.
+    """
     if _LOCAL_STORAGE_COMPONENT is None:
         return
+
     try:
         _LOCAL_STORAGE_COMPONENT(
             op="set",
-            key=storage_key,                 # <-- localStorage key
+            storage_key=storage_key,          # <-- our custom arg for JS side
             value=value,
             default=None,
-            _key=f"ls_set_{storage_key}",     # <-- Streamlit widget key
+            key=f"ls_set_{storage_key}",      # <-- Streamlit widget key
         )
     except Exception:
         pass
 
-_LOCAL_STORAGE_COMPONENT = _declare_local_storage_component()
-
-
-def _html_storage_get(key: str) -> Optional[dict]:
-    # Use a unique marker in the URL query params to receive JS response
-    marker = f"ls_{key}"
-    q = st.query_params
-
-    # If JS already wrote it into query params, read it
-    if marker in q:
-        try:
-            raw = q.get(marker)
-            if raw is None:
-                return None
-            data = json.loads(urllib.parse.unquote(raw))
-            # Important: don't leave it in URL forever
-            # Remove only our marker key
-            try:
-                del st.query_params[marker]
-            except Exception:
-                pass
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
-
-    # Otherwise inject JS that reads localStorage and writes it into query params
-    js = f"""
-    <script>
-      (function() {{
-        try {{
-          const key = {json.dumps(key)};
-          const marker = {json.dumps(marker)};
-          const raw = window.localStorage.getItem(key);
-          const val = raw ? raw : "null";
-          const url = new URL(window.location.href);
-          url.searchParams.set(marker, encodeURIComponent(val));
-          window.history.replaceState(null, "", url.toString());
-          // Trigger Streamlit rerun by posting a message
-          window.parent.postMessage({{ type: "streamlit:rerun" }}, "*");
-        }} catch (e) {{}}
-      }})();
-    </script>
-    """
-    components.html(js, height=0)
-    return None
-
-
-def _html_storage_set(key: str, value: dict) -> None:
-    js = f"""
-    <script>
-      (function() {{
-        try {{
-          const key = {json.dumps(key)};
-          const value = {json.dumps(json.dumps(value))}; // stringify safely
-          window.localStorage.setItem(key, value);
-        }} catch (e) {{}}
-      }})();
-    </script>
-    """
-    components.html(js, height=0)
-
-    # 2) Fallback
-    _html_storage_set(key, value)
 
 # =========================================================
 # Data model
