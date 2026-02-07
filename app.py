@@ -657,9 +657,31 @@ def main():
             start_new_game(elements, st.session_state.game_mode)
             st.rerun()
 
+
         if SHOW_DEBUG_UI:
             st.divider()
             st.session_state.debug_enabled = st.toggle("🛠 Debug mode", value=bool(st.session_state.debug_enabled))
+
+            if st.session_state.debug_enabled:
+                st.subheader("🧰 Debug tools")
+                st.session_state.max_guesses = int(
+                    st.number_input(
+                        "Max guesses (debug)",
+                        min_value=1,
+                        max_value=20,
+                        value=int(st.session_state.max_guesses),
+                        step=1,
+                        help="Adjust how many guesses you get. This is for testing only.",
+                    )
+                )
+                if st.button("🔄 Restart (keep debug settings)", use_container_width=True):
+                    start_new_game(elements, st.session_state.game_mode)
+                    st.rerun()
+
+                with st.expander("🧮 Candidate count", expanded=False):
+                    cand = [e for e in elements if matches(e, st.session_state.revealed)]
+                    st.write(f"Candidates matching revealed clues: **{len(cand)}**")
+
 
     # Header status
     st.write(f"🧩 **Mode:** {st.session_state.game_mode}   |   🎚️ **Difficulty:** {st.session_state.difficulty}")
