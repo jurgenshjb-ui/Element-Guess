@@ -47,11 +47,6 @@ SHOW_DEBUG_UI = (not IS_PRODUCTION) and DEBUG_ALLOWED or (not IS_PRODUCTION and 
 # - set STREAMLIT_ENV="prod" in Secrets to hide debug on Cloud
 # - keep DEBUG="false" (or omit) on Cloud
 
-def ensure_local_storage_mount():
-    if _LOCAL_STORAGE_COMPONENT is not None:
-        _LOCAL_STORAGE_COMPONENT(op="noop", key="__mount__")
-ensure_local_storage_mount()
-
 
 
 # =========================================================
