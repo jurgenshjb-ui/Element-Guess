@@ -1233,15 +1233,27 @@ def _default_stats() -> dict:
 
 
 def load_stats() -> dict:
-    if "stats" in st.session_state and isinstance(st.session_state.stats, dict):
-        return st.session_state.stats
+    # We allow up to 2 hydration attempts because components return default on first run.
+    if "_stats_hydrate_attempts" not in st.session_state:
+        st.session_state._stats_hydrate_attempts = 0
 
-    persisted = local_storage_get(STATS_KEY)
-    if isinstance(persisted, dict) and persisted.get("games_played") is not None:
-        st.session_state.stats = persisted
-    else:
+    if "stats" not in st.session_state or not isinstance(st.session_state.stats, dict):
         st.session_state.stats = _default_stats()
+
+    # If we haven't successfully hydrated yet, keep trying (up to 2 attempts)
+    if not st.session_state.get("_stats_hydrated", False):
+        st.session_state._stats_hydrate_attempts += 1
+
+        persisted = local_storage_get(STATS_KEY)
+        if isinstance(persisted, dict) and persisted.get("games_played") is not None:
+            st.session_state.stats = persisted
+            st.session_state._stats_hydrated = True
+        elif st.session_state._stats_hydrate_attempts >= 2:
+            # After 2 tries, accept "no stored stats" and stop retrying
+            st.session_state._stats_hydrated = True
+
     return st.session_state.stats
+
 
 
 def save_stats(stats: dict) -> None:
